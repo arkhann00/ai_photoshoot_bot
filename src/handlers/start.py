@@ -5,9 +5,9 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from states import MainStates
-from keyboards import get_start_keyboard, get_photoshoot_entry_keyboard
-from db import get_or_create_user
+from src.states import MainStates
+from src.keyboards import get_start_keyboard, get_photoshoot_entry_keyboard
+from src.db import get_or_create_user
 
 
 router = Router()

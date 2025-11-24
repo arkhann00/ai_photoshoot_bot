@@ -1,5 +1,3 @@
-# src/main.py
-
 import asyncio
 import logging
 
@@ -13,7 +11,9 @@ from handlers import (
     photoshoot_router,
     support_router,
     balance_router,
+    admin_router,
 )
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +32,7 @@ async def main() -> None:
     dp.include_router(photoshoot_router)
     dp.include_router(support_router)
     dp.include_router(balance_router)
+    dp.include_router(admin_router)
 
     await init_db()
     await dp.start_polling(bot)

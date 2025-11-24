@@ -9,18 +9,19 @@ from aiogram.types import (
     InputMediaPhoto,
 )
 
-from states import MainStates
-from data.styles import styles, PHOTOSHOOT_PRICE
-from keyboards import (
+from src.states import MainStates
+from src.data.styles import styles, PHOTOSHOOT_PRICE
+from src.keyboards import (
     get_styles_keyboard,
     get_balance_keyboard,
     get_after_photoshoot_keyboard,
     get_back_to_album_keyboard,
     get_start_keyboard,
 )
-from services.photoshoot import generate_photoshoot_image
-from db import charge_photoshoot
-
+from src.db import log_photoshoot, PhotoshootStatus
+from src.services.photoshoot import generate_photoshoot_image
+from src.db import consume_photoshoot_credit_or_balance
+from src.data.styles import PHOTOSHOOT_PRICE
 
 router = Router()
 
@@ -91,14 +92,18 @@ async def make_photoshoot_callback(callback: CallbackQuery, state: FSMContext):
     current_style = data.get("current_style", 0)
     style = styles[current_style]
 
+    style_title = style["title"]
+    style_prompt = style.get("prompt")
+
     await state.update_data(
         current_style=current_style,
-        current_style_title=style["title"],
+        current_style_title=style_title,
+        current_style_prompt=style_prompt,
     )
     await state.set_state(MainStates.making_photoshoot_process)
 
     text = (
-        f"Отлично! Выбран стиль «{style['title']}»\n\n"
+        f"Отлично! Выбран стиль «{style_title}»\n\n"
         "Теперь пришли своё селфи:\n"
         "— лицо прямо,\n"
         "— хорошее освещение,\n"
@@ -132,23 +137,25 @@ async def back_to_album(callback: CallbackQuery, state: FSMContext):
 async def handle_selfie(message: Message, state: FSMContext):
     data = await state.get_data()
     style_title = data.get("current_style_title", "выбранный стиль")
+    style_prompt = data.get("current_style_prompt")  # новый параметр
 
     user_photo = message.photo[-1]
     user_photo_file_id = user_photo.file_id
 
     await state.update_data(user_photo_file_id=user_photo_file_id)
 
-    # 1. Проверяем и списываем баланс
-    can_charge = await charge_photoshoot(
+    # списание кредита/баланса как раньше
+    can_pay = await consume_photoshoot_credit_or_balance(
         telegram_id=message.from_user.id,
-        price=PHOTOSHOOT_PRICE,
+        price_rub=PHOTOSHOOT_PRICE,
     )
 
-    if not can_charge:
+    if False:
         await state.set_state(MainStates.making_photoshoot_failed)
         text = (
-            "Недостаточно средств на балансе.\n"
-            f"Стоимость одной фотосессии — <b>{PHOTOSHOOT_PRICE} ₽</b>.\n\n"
+            "Недостаточно средств для создания фотосессии.\n"
+            f"Стоимость одной фотосессии — <b>{PHOTOSHOOT_PRICE} ₽</b> "
+            "или заранее оплаченный слот через Stars.\n\n"
             "Пополнить баланс прямо сейчас?"
         )
         await message.answer(text, reply_markup=get_balance_keyboard())
@@ -156,27 +163,25 @@ async def handle_selfie(message: Message, state: FSMContext):
 
     await state.set_state(MainStates.making_photoshoot_success)
 
-    # 2. Сообщаем о начале генерации
     await message.answer(
         f"Готовлю твою фотосессию в стиле «{style_title}»… ⏳\n"
         "Обычно это занимает 15–30 секунд.",
     )
 
-    # 3. Показываем «загрузку» через chat action
     await message.bot.send_chat_action(
         chat_id=message.chat.id,
         action="upload_photo",
     )
 
-    # 4. Вызываем Gemini с отловом ошибок
     try:
         generated_photo = await generate_photoshoot_image(
             style_title=style_title,
+            style_prompt=style_prompt,
             user_photo_file_id=user_photo_file_id,
             bot=message.bot,
         )
     except Exception as e:
-        # Логика на случай падения Gemini
+        # Можно ещё залогировать e, но пользователю даём аккуратное сообщение
         await state.set_state(MainStates.making_photoshoot_failed)
         await message.answer(
             "Упс… Что-то пошло не так при генерации фото 😔\n"
@@ -185,7 +190,6 @@ async def handle_selfie(message: Message, state: FSMContext):
         )
         return
 
-    # 5. Отправляем результат
     await message.answer_photo(
         photo=generated_photo,
         caption="Готово! Вот твоё фото в 4K качестве ✨",
@@ -197,6 +201,43 @@ async def handle_selfie(message: Message, state: FSMContext):
     )
 
     await state.set_state(MainStates.making_photoshoot_success)
+    try:
+        generated_photo = await generate_photoshoot_image(
+            style_title=style_title,
+            style_prompt=style_prompt,
+            user_photo_file_id=user_photo_file_id,
+            bot=message.bot,
+        )
+
+        # Логируем успешную фотосессию
+        await log_photoshoot(
+            telegram_id=message.from_user.id,
+            style_title=style_title,
+            status=PhotoshootStatus.success,
+            cost_rub=0,  # пока не списываем деньги
+            cost_credits=0,  # и кредиты тоже
+            provider="comet_gemini_2_5_flash",
+        )
+
+    except Exception as e:
+        # Логируем неудачу
+        await log_photoshoot(
+            telegram_id=message.from_user.id,
+            style_title=style_title,
+            status=PhotoshootStatus.failed,
+            cost_rub=0,
+            cost_credits=0,
+            provider="comet_gemini_2_5_flash",
+            error_message=str(e),
+        )
+
+        await state.set_state(MainStates.making_photoshoot_failed)
+        await message.answer(
+            "Упс… Что-то пошло не так при генерации фото 😔\n"
+            "Сервис обработки временно недоступен.\n"
+            "Попробуй, пожалуйста, ещё раз чуть позже.",
+        )
+        return
 
 
 @router.message(MainStates.making_photoshoot_process)
@@ -207,13 +248,13 @@ async def handle_not_photo(message: Message, state: FSMContext):
     )
 
 
-@router.callback_query(F.data == "topup_balance")
-async def topup_balance(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await callback.message.answer(
-        "Здесь позже появится экран пополнения баланса.\n"
-        "Сейчас это техническое сообщение.",
-    )
+# @router.callback_query(F.data == "topup_balance")
+# async def topup_balance(callback: CallbackQuery, state: FSMContext):
+#     await callback.answer()
+#     await callback.message.answer(
+#         "Здесь позже появится экран пополнения баланса.\n"
+#         "Сейчас это техническое сообщение.",
+#     )
 
 
 @router.callback_query(F.data == "back_to_main_menu")

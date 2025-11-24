@@ -2,7 +2,7 @@ from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from states import MainStates
+from src.states import MainStates
 
 
 router = Router()
