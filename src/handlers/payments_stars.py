@@ -10,13 +10,13 @@ from aiogram.types import (
     PreCheckoutQuery,
 )
 
-from data.star_offers import STAR_OFFERS, get_offer_by_code
-from db import (
+from src.data.star_offers import STAR_OFFERS, get_offer_by_code
+from src.db import (
     create_star_payment,
     mark_star_payment_success,
     get_user_by_telegram_id,
 )
-from keyboards import get_start_keyboard  # если у тебя уже есть
+from src.keyboards import get_start_keyboard  # если у тебя уже есть
 
 
 router = Router()
