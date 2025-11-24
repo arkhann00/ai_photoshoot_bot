@@ -4,9 +4,9 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
-from config import settings
-from db import init_db
-from handlers import (
+from src.config import settings
+from src.db import init_db
+from src.handlers import (
     start_router,
     photoshoot_router,
     support_router,
@@ -28,13 +28,17 @@ async def main() -> None:
     )
     dp = Dispatcher()
 
+    # Подключаем роутеры
     dp.include_router(start_router)
     dp.include_router(photoshoot_router)
     dp.include_router(support_router)
     dp.include_router(balance_router)
     dp.include_router(admin_router)
 
+    # Инициализация БД (создание таблиц и т.п.)
     await init_db()
+
+    # Запуск поллинга
     await dp.start_polling(bot)
 
 

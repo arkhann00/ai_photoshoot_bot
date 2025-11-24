@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import declarative_base, Mapped, mapped_column
 
-from data.star_offers import StarOffer
+from src.data.star_offers import StarOffer
 
 
 DATABASE_URL = "sqlite+aiosqlite:///./bot.db"
