@@ -8,7 +8,7 @@ from aiogram.types import (
     FSInputFile,
     InputMediaPhoto,
 )
-
+from src.paths import IMG_DIR
 from src.states import MainStates
 from src.data.styles import styles, PHOTOSHOOT_PRICE
 from src.keyboards import (
@@ -38,7 +38,7 @@ async def get_album(message: Message, state: FSMContext):
     inline_keyboard_markup = get_styles_keyboard()
 
     await message.answer_photo(
-        photo=FSInputFile(f"../img/{style['img']}"),
+        photo=FSInputFile(str(IMG_DIR / style["img"])),
         caption=f"<b>{style['title']}</b>\n\n<i>{style['description']}</i>",
         reply_markup=inline_keyboard_markup,
     )
@@ -58,7 +58,7 @@ async def next_style(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.edit_media(
         media=InputMediaPhoto(
-            media=FSInputFile(f"../img/{style['img']}"),
+            media=FSInputFile(str(IMG_DIR / style["img"])),
             caption=f"<b>{style['title']}</b>\n\n<i>{style['description']}</i>",
         ),
         reply_markup=inline_keyboard_markup,
@@ -79,7 +79,7 @@ async def previous_style(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.edit_media(
         media=InputMediaPhoto(
-            media=FSInputFile(f"../img/{style['img']}"),
+            media=FSInputFile(str(IMG_DIR / style["img"])),
             caption=f"<b>{style['title']}</b>\n\n<i>{style['description']}</i>",
         ),
         reply_markup=inline_keyboard_markup,
@@ -127,7 +127,7 @@ async def back_to_album(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer()
     await callback.message.answer_photo(
-        photo=FSInputFile(f"../img/{style['img']}"),
+        photo=FSInputFile(str(IMG_DIR / style["img"])),
         caption=f"<b>{style['title']}</b>\n\n<i>{style['description']}</i>",
         reply_markup=inline_keyboard_markup,
     )
