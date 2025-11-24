@@ -12,3 +12,8 @@ class MainStates(StatesGroup):
 class AdminStates(StatesGroup):
     admin_menu = State()
     search_user = State()
+    change_api_key = State()
+    add_style_title = State()
+    add_style_description = State()
+    add_style_prompt = State()
+    add_style_image = State()

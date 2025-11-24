@@ -1,12 +1,13 @@
 # src/handlers/photoshoot.py
 
 from aiogram import Router, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     Message,
     CallbackQuery,
     FSInputFile,
-    InputMediaPhoto,
+    InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup,
 )
 from src.paths import IMG_DIR
 from src.states import MainStates
@@ -21,6 +22,8 @@ from src.keyboards import (
 from src.db import log_photoshoot, PhotoshootStatus
 from src.services.photoshoot import generate_photoshoot_image
 from src.db import consume_photoshoot_credit_or_balance
+from src.db import (get_style_by_offset,
+    count_active_styles,)
 from src.data.styles import PHOTOSHOOT_PRICE
 
 router = Router()
@@ -30,80 +33,145 @@ router = Router()
 async def get_album(message: Message, state: FSMContext):
     await state.set_state(MainStates.making_photoshoot)
 
-    current_style = 0
-    style = styles[current_style]
+    total = await count_active_styles()
+    if total == 0:
+        await message.answer(
+            "Стили ещё не настроены. Обратись, пожалуйста, к администратору."
+        )
+        return
 
-    await state.update_data(current_style=current_style)
+    current_index = 0
+    style = await get_style_by_offset(current_index)
+    if style is None:
+        await message.answer(
+            "Не удалось загрузить стиль. Попробуй позже или обратись к администратору."
+        )
+        return
+
+    await state.update_data(current_style_index=current_index)
 
     inline_keyboard_markup = get_styles_keyboard()
 
     await message.answer_photo(
-        photo=FSInputFile(str(IMG_DIR / style["img"])),
-        caption=f"<b>{style['title']}</b>\n\n<i>{style['description']}</i>",
+        photo=FSInputFile(str(IMG_DIR / style.image_filename)),
+        caption=f"<b>{style.title}</b>\n\n<i>{style.description}</i>",
         reply_markup=inline_keyboard_markup,
     )
+
 
 
 @router.callback_query(F.data == "next")
 async def next_style(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    current_style = data.get("current_style", 0)
+    current_index = data.get("current_style_index", 0)
 
-    current_style = (current_style + 1) % len(styles)
-    await state.update_data(current_style=current_style)
+    total = await count_active_styles()
+    if total == 0:
+        await callback.answer("Стили не найдены.")
+        return
 
-    style = styles[current_style]
+    # Если только один стиль — листать нечего
+    if total == 1:
+        await callback.answer("Пока доступен только один стиль 😊", show_alert=False)
+        return
+
+    new_index = (current_index + 1) % total
+    await state.update_data(current_style_index=new_index)
+
+    style = await get_style_by_offset(new_index)
+    if style is None:
+        await callback.answer("Не удалось загрузить стиль.")
+        return
+
     inline_keyboard_markup = get_styles_keyboard()
 
+    try:
+        await callback.message.edit_media(
+            media=InputMediaPhoto(
+                media=FSInputFile(str(IMG_DIR / style.image_filename)),
+                caption=f"<b>{style.title}</b>\n\n<i>{style.description}</i>",
+            ),
+            reply_markup=inline_keyboard_markup,
+        )
+    except TelegramBadRequest as e:
+        # Если контент реально не изменился — просто игнорируем
+        if "message is not modified" in str(e):
+            await callback.answer()
+            return
+        raise
+
     await callback.answer()
-    await callback.message.edit_media(
-        media=InputMediaPhoto(
-            media=FSInputFile(str(IMG_DIR / style["img"])),
-            caption=f"<b>{style['title']}</b>\n\n<i>{style['description']}</i>",
-        ),
-        reply_markup=inline_keyboard_markup,
-    )
+
 
 
 @router.callback_query(F.data == "previous")
 async def previous_style(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    current_style = data.get("current_style", 0)
+    current_index = data.get("current_style_index", 0)
 
-    current_style = (current_style - 1) % len(styles)
-    await state.update_data(current_style=current_style)
+    total = await count_active_styles()
+    if total == 0:
+        await callback.answer("Стили не найдены.")
+        return
 
-    style = styles[current_style]
+    # Если только один стиль — листать нечего
+    if total == 1:
+        await callback.answer("Пока доступен только один стиль 😊", show_alert=False)
+        return
+
+    new_index = (current_index - 1) % total
+    await state.update_data(current_style_index=new_index)
+
+    style = await get_style_by_offset(new_index)
+    if style is None:
+        await callback.answer("Не удалось загрузить стиль.")
+        return
+
     inline_keyboard_markup = get_styles_keyboard()
 
+    try:
+        await callback.message.edit_media(
+            media=InputMediaPhoto(
+                media=FSInputFile(str(IMG_DIR / style.image_filename)),
+                caption=f"<b>{style.title}</b>\n\n<i>{style.description}</i>",
+            ),
+            reply_markup=inline_keyboard_markup,
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            await callback.answer()
+            return
+        raise
+
     await callback.answer()
-    await callback.message.edit_media(
-        media=InputMediaPhoto(
-            media=FSInputFile(str(IMG_DIR / style["img"])),
-            caption=f"<b>{style['title']}</b>\n\n<i>{style['description']}</i>",
-        ),
-        reply_markup=inline_keyboard_markup,
-    )
+
+
 
 
 @router.callback_query(F.data == "make_photoshoot")
-async def make_photoshoot_callback(callback: CallbackQuery, state: FSMContext):
+async def make_photoshoot(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    current_style = data.get("current_style", 0)
-    style = styles[current_style]
+    current_index = data.get("current_style_index", 0)
 
-    style_title = style["title"]
-    style_prompt = style.get("prompt")
+    style = await get_style_by_offset(current_index)
+    if style is None:
+        await callback.answer("Не удалось загрузить стиль.")
+        return
 
     await state.update_data(
-        current_style=current_style,
-        current_style_title=style_title,
-        current_style_prompt=style_prompt,
+        current_style_index=current_index,
+        current_style_title=style.title,
+        current_style_prompt=style.prompt,
     )
     await state.set_state(MainStates.making_photoshoot_process)
 
+    back_inline_button = InlineKeyboardButton(text="Назад", callback_data="next")
+    inline_keyboard_markup = InlineKeyboardMarkup(
+        inline_keyboard=[[back_inline_button]]
+    )
+
     text = (
-        f"Отлично! Выбран стиль «{style_title}»\n\n"
+        f"Отлично! Выбран стиль «{style.title}»\n\n"
         "Теперь пришли своё селфи:\n"
         "— лицо прямо,\n"
         "— хорошее освещение,\n"
@@ -112,7 +180,7 @@ async def make_photoshoot_callback(callback: CallbackQuery, state: FSMContext):
     )
 
     await callback.answer()
-    await callback.message.answer(text, reply_markup=get_back_to_album_keyboard())
+    await callback.message.answer(text, reply_markup=inline_keyboard_markup)
 
 
 @router.callback_query(F.data == "back_to_album")

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 from typing import Optional, Tuple
 from typing import List
-from sqlalchemy import select, func
+from sqlalchemy import select, func, Boolean
 from aiogram.types import User as TgUser
 from sqlalchemy import (
     BigInteger,
@@ -27,7 +27,7 @@ from sqlalchemy.orm import declarative_base, Mapped, mapped_column
 
 from src.data.star_offers import StarOffer
 
-
+SUPER_ADMIN_ID = 707366569
 DATABASE_URL = "sqlite+aiosqlite:///./bot.db"
 
 engine = create_async_engine(
@@ -56,25 +56,16 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
-    username: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    first_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    last_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
-    # Рубли — если всё-таки оставишь рублёвый баланс
+    username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     balance: Mapped[int] = mapped_column(Integer, default=0)
-
-    # Кредиты фотосессий, которые покупаются через Stars
     photoshoot_credits: Mapped[int] = mapped_column(Integer, default=0)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)  # <-- НОВОЕ
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
     )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
+
 
 
 class StarPayment(Base):
@@ -125,27 +116,88 @@ async def init_db() -> None:
 
 # ---------- Работа с пользователями ----------
 
-async def get_or_create_user(tg_user: TgUser) -> User:
+# ---------- Хелперы по пользователям / админам ----------
+
+# src/db.py
+
+from typing import Optional
+from sqlalchemy import select
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import BigInteger, String, Integer, Boolean, DateTime, func
+from datetime import datetime
+
+# ... здесь модель User и остальной код ...
+
+
+async def get_or_create_user(
+    telegram_id: int,
+    username: Optional[str] = None,
+) -> User:
+    """
+    Получаем пользователя по telegram_id, если нет — создаём.
+    """
     async with async_session() as session:
         result = await session.execute(
-            select(User).where(User.telegram_id == tg_user.id)
+            select(User).where(User.telegram_id == telegram_id)
         )
         user = result.scalar_one_or_none()
+        if user:
+            # Обновим username, если изменился
+            if username is not None and user.username != username:
+                user.username = username
+                await session.commit()
+            return user
 
-        if user is None:
-            user = User(
-                telegram_id=tg_user.id,
-                username=tg_user.username,
-                first_name=tg_user.first_name,
-                last_name=tg_user.last_name,
-                balance=0,
-                photoshoot_credits=0,
-            )
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
-
+        user = User(
+            telegram_id=telegram_id,
+            username=username,
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
         return user
+
+
+async def set_user_admin_flag(telegram_id: int, is_admin: bool) -> Optional[User]:
+    """
+    Включаем/выключаем флаг is_admin у пользователя.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
+        user = result.scalar_one_or_none()
+        if user is None:
+            return None
+
+        user.is_admin = is_admin
+        await session.commit()
+        await session.refresh(user)
+        return user
+
+
+async def is_user_admin_db(telegram_id: int) -> bool:
+    """
+    Проверка: является ли пользователь админом в БД.
+    SUPER_ADMIN_ID тут не учитываем, он отдельный.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(User.is_admin).where(User.telegram_id == telegram_id)
+        )
+        value = result.scalar_one_or_none()
+        return bool(value)
+
+
+async def get_admin_users() -> List[User]:
+    """
+    Список всех пользователей из БД с is_admin = True.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.is_admin == True)  # noqa: E712
+        )
+        return list(result.scalars().all())
 
 
 async def get_user_by_telegram_id(telegram_id: int) -> User:
@@ -533,3 +585,71 @@ async def change_user_balance(telegram_id: int, delta: int) -> User | None:
         await session.refresh(user)
 
         return user
+
+# ---------- Стили / промпты ----------
+
+class StylePrompt(Base):
+    __tablename__ = "style_prompts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    description: Mapped[str] = mapped_column(String(512))
+    prompt: Mapped[str] = mapped_column(String(2048))
+    image_filename: Mapped[str] = mapped_column(String(128), default="1.jpeg")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+
+async def create_style_prompt(
+    title: str,
+    description: str,
+    prompt: str,
+    image_filename: str,
+) -> StylePrompt:
+    """
+    Создаёт новый стиль/промпт.
+    title — уникальный заголовок.
+    image_filename — например, '1.jpeg'.
+    """
+    async with async_session() as session:
+        style = StylePrompt(
+            title=title,
+            description=description,
+            prompt=prompt,
+            image_filename=image_filename,
+        )
+        session.add(style)
+        await session.commit()
+        await session.refresh(style)
+        return style
+
+
+async def count_active_styles() -> int:
+    async with async_session() as session:
+        total = await session.scalar(
+            select(func.count()).select_from(StylePrompt).where(
+                StylePrompt.is_active == True  # noqa: E712
+            )
+        )
+        return int(total or 0)
+
+
+async def get_style_by_offset(offset: int) -> StylePrompt | None:
+    """
+    Получить стиль по смещению (offset) среди активных.
+    Используем для карусели (0-й, 1-й, 2-й...).
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(StylePrompt)
+            .where(StylePrompt.is_active == True)  # noqa: E712
+            .order_by(StylePrompt.id.asc())
+            .offset(offset)
+            .limit(1)
+        )
+        style = result.scalar_one_or_none()
+        return style
