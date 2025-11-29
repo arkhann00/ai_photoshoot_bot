@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    container_name: ai_photoshoot_bot
+    restart: always
+
+    # Подхватываем переменные окружения из .env
+    env_file:
+      - .env
+
+    # Опционально: пробрасываем время/таймзону хоста (не обязательно)
+    environment:
+      TZ: "Europe/Moscow"
+
+    # Если хочешь, можно пробросить локальную БД наружу (чтобы не терялась при пересборке)
+    # Для простоты сейчас без volume, бот хранит bot.db внутри контейнера.
+    # Потом можно добавить volume типа:
+    # volumes:
+    #   - ./data:/app/data
+
+    # Логи в stdout/stderr — доступны через `docker logs`

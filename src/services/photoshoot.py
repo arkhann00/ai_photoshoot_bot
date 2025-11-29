@@ -18,7 +18,7 @@ from src.config import settings
 logger = logging.getLogger(__name__)
 
 COMET_BASE_URL = "https://api.cometapi.com"
-COMET_MODEL_NAME = "gemini-2.5-flash-image-preview"
+COMET_MODEL_NAME = "gemini-3-pro-image"
 COMET_ENDPOINT = f"{COMET_BASE_URL}/v1beta/models/{COMET_MODEL_NAME}:generateContent"
 
 

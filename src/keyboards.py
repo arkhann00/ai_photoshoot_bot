@@ -6,11 +6,12 @@ from aiogram.types import (
 )
 
 
-def get_start_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Создать фотосессию ✨")],
-            [KeyboardButton(text="Баланс"), KeyboardButton(text="Поддержка")],
+def get_start_keyboard() -> InlineKeyboardMarkup:
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Создать фотосессию ✨", callback_data="make_photo")],
+            [InlineKeyboardButton(text="Баланс", callback_data="balance"), InlineKeyboardButton(text="Поддержка", callback_data="support")],
         ],
         resize_keyboard=True,
     )
@@ -38,15 +39,19 @@ def get_styles_keyboard() -> InlineKeyboardMarkup:
         text="Сделать такую же",
         callback_data="make_photoshoot",
     )
+    back_button = InlineKeyboardButton(
+        text="« Назад",
+        callback_data="back_to_main_menu",  # у тебя уже есть такой хендлер
+    )
 
     inline_keyboard_markup = InlineKeyboardMarkup(
         inline_keyboard=[
             [left_inline_button, right_inline_button],
             [make_photoshoot_button],
+            [back_button],
         ]
     )
     return inline_keyboard_markup
-
 
 def get_balance_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(

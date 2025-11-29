@@ -46,13 +46,3 @@ async def command_start(message: Message, state: FSMContext):
     )
 
 
-
-@router.message(F.text == "Создать фотосессию ✨")
-async def make_photoshoot(message: Message, state: FSMContext):
-    await state.set_state(MainStates.making_photoshoot)
-
-    await message.answer(
-        "Выбери стиль своей будущей фотосессии ✨\n\n"
-        "Более 20 профессиональных направлений в 4K-качестве.",
-        reply_markup=get_photoshoot_entry_keyboard(),
-    )
