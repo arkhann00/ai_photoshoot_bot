@@ -170,7 +170,7 @@ def get_payment_error_keyboard() -> InlineKeyboardMarkup:
 # Вход в раздел «Баланс»
 # =====================================================================
 
-@router.callback_query(F.data == "open_balance")
+@router.callback_query(F.data == "balance")
 async def open_balance(callback: CallbackQuery) -> None:
     """
     Пользователь нажал кнопку «Баланс» в главном меню.
