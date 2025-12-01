@@ -17,13 +17,17 @@ from src.db import (
     search_users,
     change_user_credits,
     get_user_by_telegram_id,
-    change_user_balance,          # добавили
-    get_photoshoot_report,        # добавили
-    get_payments_report,          # добавили
+    change_user_balance,
+    get_photoshoot_report,
+    get_payments_report,
     create_style_prompt,
-get_admin_users,
-
+    get_admin_users,
+    get_all_style_prompts,
+    get_style_prompt_by_id,
+    delete_style_prompt,
 )
+
+
 from aiogram.filters import Command
 
 from src.services.admins import (
@@ -71,6 +75,12 @@ def get_admin_main_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="🧩 Добавить стиль",
                     callback_data="admin_style_add",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🧩 Стили (список/удалить)",
+                    callback_data="admin_styles",
                 )
             ],
             [
@@ -468,6 +478,134 @@ async def admin_report_7d(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
+@router.callback_query(F.data == "admin_styles")
+async def admin_styles_list(callback: CallbackQuery, state: FSMContext):
+    """
+    Список стилей с кнопками для удаления.
+    """
+    if not await is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+
+    styles = await get_all_style_prompts(include_inactive=True)
+
+    if not styles:
+        await callback.message.edit_text(
+            "🧩 Стили ещё не созданы.",
+            reply_markup=get_admin_main_keyboard(),
+        )
+        await callback.answer()
+        return
+
+    # Текст со списком стилей
+    lines: list[str] = []
+    lines.append("🧩 Стили (для удаления):\n")
+
+    keyboard_rows: list[list[InlineKeyboardButton]] = []
+
+    for style in styles:
+        status = "✅" if style.is_active else "🚫"
+        lines.append(f"{status} <b>{style.id}</b>. {style.title}")
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"❌ Удалить «{style.title}»",
+                    callback_data=f"admin_style_delete:{style.id}",
+                )
+            ]
+        )
+
+    # Кнопка назад в админ-меню
+    keyboard_rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ В админ-меню",
+                callback_data="admin_menu",
+            )
+        ]
+    )
+
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+    await callback.message.edit_text("\n".join(lines), reply_markup=markup)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_style_delete:"))
+async def admin_style_delete(callback: CallbackQuery, state: FSMContext):
+    """
+    Удаление стиля по ID.
+    """
+    if not await is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+
+    try:
+        style_id_str = callback.data.split(":", 1)[1]
+        style_id = int(style_id_str)
+    except Exception:
+        await callback.answer("Некорректный ID стиля.")
+        return
+
+    style = await get_style_prompt_by_id(style_id)
+    if style is None:
+        await callback.answer("Стиль не найден или уже удалён.")
+        return
+
+    title = style.title
+
+    ok = await delete_style_prompt(style_id)
+    if not ok:
+        await callback.answer("Не удалось удалить стиль (возможно, он уже удалён).")
+        return
+
+    # После удаления — показываем обновлённый список
+    styles = await get_all_style_prompts(include_inactive=True)
+
+    if not styles:
+        await callback.message.edit_text(
+            f"✅ Стиль «{title}» удалён.\n\n"
+            "Больше стилей нет.",
+            reply_markup=get_admin_main_keyboard(),
+        )
+        await callback.answer("Стиль удалён.")
+        return
+
+    lines: list[str] = []
+    lines.append(f"✅ Стиль «{title}» удалён.\n")
+    lines.append("🧩 Оставшиеся стили:\n")
+
+    keyboard_rows: list[list[InlineKeyboardButton]] = []
+
+    for s in styles:
+        status = "✅" if s.is_active else "🚫"
+        lines.append(f"{status} <b>{s.id}</b>. {s.title}")
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"❌ Удалить «{s.title}»",
+                    callback_data=f"admin_style_delete:{s.id}",
+                )
+            ]
+        )
+
+    keyboard_rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ В админ-меню",
+                callback_data="admin_menu",
+            )
+        ]
+    )
+
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+    await callback.message.edit_text("\n".join(lines), reply_markup=markup)
+    await callback.answer("Стиль удалён.")
+
+
+
+from aiogram.types import CallbackQuery
+from aiogram.fsm.context import FSMContext
 
 @router.callback_query(F.data == "admin_style_add")
 async def admin_style_add_start(callback: CallbackQuery, state: FSMContext):
@@ -483,11 +621,12 @@ async def admin_style_add_start(callback: CallbackQuery, state: FSMContext):
         new_style_image=None,
     )
 
-    await callback.message.edit_text(
+    await callback.message.answer(
         "🧩 Добавление нового стиля\n\n"
         "Шаг 1/4 — Введи <b>название стиля</b>.\n\n"
     )
     await callback.answer()
+
 
 @router.message(AdminStates.add_style_title)
 async def admin_style_add_title(message: Message, state: FSMContext):
@@ -537,10 +676,7 @@ async def admin_style_add_prompt(message: Message, state: FSMContext):
     await state.set_state(AdminStates.add_style_image)
 
     await message.answer(
-        "Шаг 4/4 — Выбери картинку для альбома.\n\n"
-        "Сейчас можно использовать уже существующие файлы 1–5.\n"
-        "Введи номер от 1 до 5.\n\n"
-        "Например: <b>1</b>",
+        "Прищли сюда фото для стиля>",
     )
 
 @router.message(AdminStates.add_style_image)
@@ -552,6 +688,7 @@ async def admin_style_add_image(message: Message, state: FSMContext):
     file_bytes: bytes | None = None
     file_ext: str = ".jpg"
 
+    # 1) Фото как "photo" (галерея айфона, обычное фото)
     if message.photo:
         photo = message.photo[-1]
         file_id = photo.file_id
@@ -566,6 +703,7 @@ async def admin_style_add_image(message: Message, state: FSMContext):
 
         file_ext = ".jpg"
 
+    # 2) Картинка как документ (PNG, WEBP, HEIC и т.п.)
     elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
         document = message.document
 
@@ -580,26 +718,26 @@ async def admin_style_add_image(message: Message, state: FSMContext):
         original_filename = document.file_name or ""
         ext_from_name = Path(original_filename).suffix.lower()
 
-        allowed_exts = [".jpg", ".jpeg", ".png", ".webp"]
-
+        allowed_exts = [".jpg", ".jpeg", ".png", ".webp", ".heic"]
         if ext_from_name in allowed_exts:
             file_ext = ext_from_name
         else:
             file_ext = ".jpg"
 
+    # 3) Текст: номер 1–5 или имя файла
     else:
         if message.text is None:
             await message.answer(
                 "Пожалуйста, отправь одно из:\n"
                 "— фото как картинку;\n"
-                "— файл-картинку (PNG, WEBP и т.п.);\n"
+                "— файл-картинку (PNG, WEBP, HEIC и т.п.);\n"
                 "— или номер картинки от 1 до 5."
             )
             return
 
         raw = message.text.strip()
 
-        if raw.endswith(".jpeg") or raw.endswith(".jpg") or raw.endswith(".png") or raw.endswith(".webp"):
+        if raw.endswith(".jpeg") or raw.endswith(".jpg") or raw.endswith(".png") or raw.endswith(".webp") or raw.endswith(".heic"):
             image_filename = raw
         else:
             if not raw.isdigit():
@@ -619,6 +757,7 @@ async def admin_style_add_image(message: Message, state: FSMContext):
 
             image_filename = f"{num}.jpeg"
 
+    # 4) Если прилетели байты картинки — сохраняем в IMG_DIR
     if file_bytes is not None:
         unique_name = f"style_{uuid4().hex}{file_ext}"
         full_path = IMG_DIR / unique_name
@@ -630,6 +769,7 @@ async def admin_style_add_image(message: Message, state: FSMContext):
 
         image_filename = unique_name
 
+    # 5) Достаём title/description/prompt из FSM
     data = await state.get_data()
     title = data.get("new_style_title")
     description = data.get("new_style_description")
@@ -653,6 +793,7 @@ async def admin_style_add_image(message: Message, state: FSMContext):
         )
         return
 
+    # 6) Пытаемся создать стиль в БД
     try:
         style = await create_style_prompt(
             title=title,
@@ -661,6 +802,7 @@ async def admin_style_add_image(message: Message, state: FSMContext):
             image_filename=image_filename,
         )
     except Exception as e:
+        # Если здесь будет ошибка уникальности или любая другая — ты её увидишь
         await message.answer(
             "❌ Не удалось сохранить стиль в базе данных.\n"
             f"Техническая ошибка: <code>{e}</code>"
@@ -672,19 +814,29 @@ async def admin_style_add_image(message: Message, state: FSMContext):
         )
         return
 
+    # 7) Для жёсткого дебага: покажем ID стиля и список всех стилей из БД
+    styles_after = await get_all_style_prompts(include_inactive=True)
+    lines: list[str] = []
+    lines.append("🧩 Стили после добавления:\n")
+    for s in styles_after:
+        status = "✅" if s.is_active else "🚫"
+        lines.append(f"{status} {s.id}. {s.title} ({s.image_filename})")
+
     await state.set_state(AdminStates.admin_menu)
 
     await message.answer(
         "✅ Новый стиль успешно создан!\n\n"
         f"<b>{style.title}</b>\n\n"
         f"{style.description}\n\n"
-        f"Файл картинки: <code>{style.image_filename}</code>",
+        f"Файл картинки: <code>{style.image_filename}</code>\n\n"
+        f"ID стиля: <code>{style.id}</code>",
     )
 
     await message.answer(
-        "👑 Админ-панель.\n\nВыбери раздел:",
+        "\n".join(lines),
         reply_markup=get_admin_main_keyboard(),
     )
+
 
 
 @router.message(Command("add_admin"))

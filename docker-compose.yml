@@ -12,21 +12,7 @@ services:
     environment:
       TZ: "Europe/Moscow"
 
-    # По умолчанию бот стартует командой из Dockerfile:
-    # CMD ["python", "-m", "src.main"]
-
-  backend:
-    build: .
-    container_name: ai_photoshoot_backend
-    restart: always
-
-    env_file:
-      - .env
-
-    environment:
-      TZ: "Europe/Moscow"
-
-    ports:
-      - "8000:8000"
-
-    command: ["uvicorn", "src.webapp_api:app", "--host", "0.0.0.0", "--port", "8000"]
+    # ВАЖНО: сохраняем базу и папку с картинками за пределами контейнера
+    volumes:
+      - ./bot_data:/app/bot_data
+      - ./img:/app/img

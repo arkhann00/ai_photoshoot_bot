@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+from src.config import settings
 from datetime import datetime, timedelta
 from uuid import uuid4
 from typing import Optional, Tuple
@@ -28,13 +29,14 @@ from sqlalchemy.orm import declarative_base, Mapped, mapped_column
 from src.data.star_offers import StarOffer
 
 SUPER_ADMIN_ID = 707366569
-DATABASE_URL = "sqlite+aiosqlite:///./bot.db"
+DATABASE_URL = settings.DATABASE_URL
 
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False,
+    echo=True,
     future=True,
 )
+
 
 async_session = async_sessionmaker(
     engine,
@@ -653,3 +655,42 @@ async def get_style_by_offset(offset: int) -> StylePrompt | None:
         )
         style = result.scalar_one_or_none()
         return style
+
+async def get_style_prompt_by_id(style_id: int) -> StylePrompt | None:
+    """
+    Получить стиль по его ID.
+    """
+    async with async_session() as session:
+        style = await session.get(StylePrompt, style_id)
+        return style
+
+
+async def get_all_style_prompts(include_inactive: bool = True) -> list[StylePrompt]:
+    """
+    Получить список всех стилей.
+
+    include_inactive = False  -> только активные (is_active = True)
+    include_inactive = True   -> все стили.
+    """
+    async with async_session() as session:
+        stmt = select(StylePrompt)
+        if not include_inactive:
+            stmt = stmt.where(StylePrompt.is_active == True)  # noqa: E712
+        stmt = stmt.order_by(StylePrompt.id.asc())
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+
+async def delete_style_prompt(style_id: int) -> bool:
+    """
+    Удаляет стиль по ID из базы.
+    Возвращает True, если стиль был найден и удалён, иначе False.
+    """
+    async with async_session() as session:
+        style = await session.get(StylePrompt, style_id)
+        if style is None:
+            return False
+
+        await session.delete(style)
+        await session.commit()
+        return True
