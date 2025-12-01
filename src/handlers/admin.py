@@ -33,6 +33,11 @@ from src.services.admins import (
     get_admin_ids,
 )
 from src.db import SUPER_ADMIN_ID
+from uuid import uuid4
+from pathlib import Path
+import os
+
+from src.paths import IMG_DIR
 
 
 router = Router()
@@ -543,42 +548,93 @@ async def admin_style_add_image(message: Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
         return
 
-    # Проверяем, что вообще есть текст
-    if message.text is None:
-        await message.answer(
-            "Пожалуйста, пришли <b>номер картинки</b> от 1 до 5 (не имеет значение какую цифру вводить)"
-        )
-        return
+    image_filename: str | None = None
+    file_bytes: bytes | None = None
+    file_ext: str = ".jpg"
 
-    raw = message.text.strip()
+    if message.photo:
+        photo = message.photo[-1]
+        file_id = photo.file_id
 
-    # Если админ сразу ввёл имя файла – ок
-    if raw.endswith(".jpeg") or raw.endswith(".jpg") or raw.endswith(".png") or raw.endswith(".webp"):
-        image_filename = raw
+        tg_file = await message.bot.get_file(file_id)
+        stream = await message.bot.download_file(tg_file.file_path)
+
+        if hasattr(stream, "read"):
+            file_bytes = stream.read()
+        else:
+            file_bytes = stream
+
+        file_ext = ".jpg"
+
+    elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
+        document = message.document
+
+        tg_file = await message.bot.get_file(document.file_id)
+        stream = await message.bot.download_file(tg_file.file_path)
+
+        if hasattr(stream, "read"):
+            file_bytes = stream.read()
+        else:
+            file_bytes = stream
+
+        original_filename = document.file_name or ""
+        ext_from_name = Path(original_filename).suffix.lower()
+
+        allowed_exts = [".jpg", ".jpeg", ".png", ".webp"]
+
+        if ext_from_name in allowed_exts:
+            file_ext = ext_from_name
+        else:
+            file_ext = ".jpg"
+
     else:
-        # ожидаем номер 1–5
-        if not raw.isdigit():
+        if message.text is None:
             await message.answer(
-                "Ожидаю номер картинки от 1 до 5 (или имя файла, например <code>1.jpeg</code>). "
-                "Попробуй ещё раз."
+                "Пожалуйста, отправь одно из:\n"
+                "— фото как картинку;\n"
+                "— файл-картинку (PNG, WEBP и т.п.);\n"
+                "— или номер картинки от 1 до 5."
             )
             return
 
-        num = int(raw)
-        if num < 1 or num > 5:
-            await message.answer(
-                "Номер должен быть от 1 до 5. Попробуй ещё раз."
-            )
-            return
+        raw = message.text.strip()
 
-        image_filename = f"{num}.jpeg"
+        if raw.endswith(".jpeg") or raw.endswith(".jpg") or raw.endswith(".png") or raw.endswith(".webp"):
+            image_filename = raw
+        else:
+            if not raw.isdigit():
+                await message.answer(
+                    "Ожидаю либо номер картинки от 1 до 5, либо имя файла "
+                    "(например <code>1.jpeg</code>), либо загруженную фотографию.\n"
+                    "Попробуй ещё раз."
+                )
+                return
+
+            num = int(raw)
+            if num < 1 or num > 5:
+                await message.answer(
+                    "Номер должен быть от 1 до 5. Попробуй ещё раз."
+                )
+                return
+
+            image_filename = f"{num}.jpeg"
+
+    if file_bytes is not None:
+        unique_name = f"style_{uuid4().hex}{file_ext}"
+        full_path = IMG_DIR / unique_name
+
+        os.makedirs(IMG_DIR, exist_ok=True)
+
+        with open(full_path, "wb") as f:
+            f.write(file_bytes)
+
+        image_filename = unique_name
 
     data = await state.get_data()
     title = data.get("new_style_title")
     description = data.get("new_style_description")
     prompt = data.get("new_style_prompt")
 
-    # финальная страховка
     if not title or not description or not prompt:
         await message.answer(
             "Что-то пошло не так с сохранением данных. Попробуй ещё раз добавить стиль."
@@ -590,7 +646,13 @@ async def admin_style_add_image(message: Message, state: FSMContext):
         )
         return
 
-    # создаём стиль в БД
+    if not image_filename:
+        await message.answer(
+            "Не удалось получить картинку стиля.\n"
+            "Отправь, пожалуйста, фото или файл-картинку, либо номер от 1 до 5."
+        )
+        return
+
     try:
         style = await create_style_prompt(
             title=title,
@@ -623,6 +685,7 @@ async def admin_style_add_image(message: Message, state: FSMContext):
         "👑 Админ-панель.\n\nВыбери раздел:",
         reply_markup=get_admin_main_keyboard(),
     )
+
 
 @router.message(Command("add_admin"))
 async def cmd_add_admin(message: Message):

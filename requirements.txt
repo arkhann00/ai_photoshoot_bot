@@ -5,11 +5,14 @@ aiohttp==3.12.15
 aiosignal==1.4.0
 aiosqlite==0.21.0
 alembic==1.17.2
+annotated-doc==0.0.4
 annotated-types==0.7.0
+anyio==4.12.0
 attrs==25.4.0
 cachetools==6.2.2
 certifi==2025.11.12
 charset-normalizer==3.4.4
+fastapi==0.123.0
 frozenlist==1.8.0
 google-ai-generativelanguage==0.6.15
 google-api-core==2.28.1
@@ -40,6 +43,7 @@ python-dotenv==1.2.1
 requests==2.32.5
 rsa==4.9.1
 SQLAlchemy==2.0.44
+starlette==0.50.0
 tqdm==4.67.1
 typing-inspection==0.4.2
 typing_extensions==4.15.0

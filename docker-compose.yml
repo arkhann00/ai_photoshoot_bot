@@ -6,18 +6,27 @@ services:
     container_name: ai_photoshoot_bot
     restart: always
 
-    # Подхватываем переменные окружения из .env
     env_file:
       - .env
 
-    # Опционально: пробрасываем время/таймзону хоста (не обязательно)
     environment:
       TZ: "Europe/Moscow"
 
-    # Если хочешь, можно пробросить локальную БД наружу (чтобы не терялась при пересборке)
-    # Для простоты сейчас без volume, бот хранит bot.db внутри контейнера.
-    # Потом можно добавить volume типа:
-    # volumes:
-    #   - ./data:/app/data
+    # По умолчанию бот стартует командой из Dockerfile:
+    # CMD ["python", "-m", "src.main"]
 
-    # Логи в stdout/stderr — доступны через `docker logs`
+  backend:
+    build: .
+    container_name: ai_photoshoot_backend
+    restart: always
+
+    env_file:
+      - .env
+
+    environment:
+      TZ: "Europe/Moscow"
+
+    ports:
+      - "8000:8000"
+
+    command: ["uvicorn", "src.webapp_api:app", "--host", "0.0.0.0", "--port", "8000"]
