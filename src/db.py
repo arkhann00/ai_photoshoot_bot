@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import enum
+
+from sqlalchemy.sql.expression import text
+
 from src.config import settings
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -61,13 +64,19 @@ class User(Base):
     username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     balance: Mapped[int] = mapped_column(Integer, default=0)
     photoshoot_credits: Mapped[int] = mapped_column(Integer, default=0)
-    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)  # <-- НОВОЕ
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # новый столбец — telegram_id пригласившего пользователя
+    referrer_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        nullable=True,
+        index=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
     )
-
 
 
 class StarPayment(Base):
@@ -109,10 +118,32 @@ class StarPayment(Base):
     )
 
 
+async def run_manual_migrations() -> None:
+    """
+    Простейшие ручные миграции для продакшена.
+    Сейчас:
+    - добавляем колонку referrer_id в таблицу users, если её ещё нет.
+    """
+    async with engine.begin() as conn:
+        # Проверяем список колонок в таблице users через PRAGMA (SQLite)
+        result = await conn.execute(text("PRAGMA table_info(users);"))
+        rows = result.fetchall()
+        column_names = [row[1] for row in rows]  # row[1] — имя колонки
+
+        if "referrer_id" not in column_names:
+            # Добавляем новую колонку, nullable
+            await conn.execute(
+                text("ALTER TABLE users ADD COLUMN referrer_id BIGINT;")
+            )
+            # Для SQLite ALTER TABLE ADD COLUMN не требует отдельного COMMIT в этом режиме
+
 # ---------- Инициализация БД ----------
 
 async def init_db() -> None:
     async with engine.begin() as conn:
+        # сначала ручные миграции
+        await run_manual_migrations()
+        # потом создаём недостающие таблицы (например, user_avatars)
         await conn.run_sync(Base.metadata.create_all)
 
 
@@ -134,30 +165,41 @@ from datetime import datetime
 async def get_or_create_user(
     telegram_id: int,
     username: Optional[str] = None,
+    referrer_telegram_id: Optional[int] = None,
 ) -> User:
     """
     Получаем пользователя по telegram_id, если нет — создаём.
+    referrer_telegram_id учитывается только при создании.
     """
     async with async_session() as session:
         result = await session.execute(
             select(User).where(User.telegram_id == telegram_id)
         )
         user = result.scalar_one_or_none()
+
         if user:
-            # Обновим username, если изменился
+            # обновим username, если поменялся
+            changed = False
             if username is not None and user.username != username:
                 user.username = username
+                changed = True
+
+            # уже существующему пользователю НЕ меняем referrer_id
+            if changed:
                 await session.commit()
             return user
 
+        # создаём нового пользователя
         user = User(
             telegram_id=telegram_id,
             username=username,
+            referrer_id=referrer_telegram_id,
         )
         session.add(user)
         await session.commit()
         await session.refresh(user)
         return user
+
 
 
 async def set_user_admin_flag(telegram_id: int, is_admin: bool) -> Optional[User]:
@@ -692,5 +734,91 @@ async def delete_style_prompt(style_id: int) -> bool:
             return False
 
         await session.delete(style)
+        await session.commit()
+        return True
+
+# ---------- Аватары пользователей ----------
+
+MAX_AVATARS_PER_USER = 3
+
+
+class UserAvatar(Base):
+    __tablename__ = "user_avatars"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    file_id: Mapped[str] = mapped_column(String(255))
+    source_style_title: Mapped[Optional[str]] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+
+async def get_user_avatars(telegram_id: int) -> list[UserAvatar]:
+    """
+    Все аватары пользователя.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(UserAvatar)
+            .where(UserAvatar.telegram_id == telegram_id)
+            .order_by(UserAvatar.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+
+async def create_user_avatar(
+    telegram_id: int,
+    file_id: str,
+    source_style_title: Optional[str] = None,
+) -> UserAvatar | None:
+    """
+    Создать новый аватар для пользователя.
+    Не больше MAX_AVATARS_PER_USER на одного пользователя.
+    Возвращает аватар или None, если лимит исчерпан.
+    """
+    async with async_session() as session:
+        # считаем, сколько уже аватаров
+        count = await session.scalar(
+            select(func.count()).select_from(UserAvatar).where(
+                UserAvatar.telegram_id == telegram_id
+            )
+        )
+        if (count or 0) >= MAX_AVATARS_PER_USER:
+            return None
+
+        avatar = UserAvatar(
+            telegram_id=telegram_id,
+            file_id=file_id,
+            source_style_title=source_style_title,
+        )
+        session.add(avatar)
+        await session.commit()
+        await session.refresh(avatar)
+        return avatar
+
+
+async def delete_user_avatar(telegram_id: int, avatar_id: int) -> bool:
+    """
+    Удаляет аватар по ID, только если он принадлежит пользователю.
+    Возвращает True, если аватар удалён.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(UserAvatar).where(
+                UserAvatar.id == avatar_id,
+                UserAvatar.telegram_id == telegram_id,
+            )
+        )
+        avatar = result.scalar_one_or_none()
+        if avatar is None:
+            return False
+
+        await session.delete(avatar)
         await session.commit()
         return True

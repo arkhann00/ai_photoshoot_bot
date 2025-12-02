@@ -12,7 +12,8 @@ from src.handlers import (
     support_router,
     balance_router,
     admin_router,
-    payments_stars_router
+    payments_stars_router,
+    cabinet_router
 )
 
 
@@ -36,6 +37,7 @@ async def main() -> None:
     dp.include_router(balance_router)
     dp.include_router(admin_router)
     dp.include_router(payments_stars_router)
+    dp.include_router(cabinet_router)
 
     # Инициализация БД (создание таблиц и т.п.)
     await init_db()

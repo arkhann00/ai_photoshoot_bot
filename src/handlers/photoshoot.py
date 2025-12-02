@@ -20,6 +20,7 @@ from src.keyboards import (
     get_back_to_album_keyboard,
     get_start_keyboard,
     get_photoshoot_entry_keyboard,
+    back_to_main_menu_keyboard
 )
 from src.db import log_photoshoot, PhotoshootStatus
 from src.services.photoshoot import generate_photoshoot_image
@@ -27,6 +28,16 @@ from src.db import consume_photoshoot_credit_or_balance
 from src.db import get_style_by_offset, count_active_styles
 from src.data.styles import PHOTOSHOOT_PRICE
 from src.services.admins import is_admin  # <-- добавили
+from src.db import (
+    log_photoshoot,
+    PhotoshootStatus,
+    consume_photoshoot_credit_or_balance,
+    get_style_by_offset,
+    count_active_styles,
+    get_user_avatars,          # новый импорт
+    create_user_avatar,        # новый импорт
+    MAX_AVATARS_PER_USER,      # новый импорт
+)
 
 router = Router()
 
@@ -38,24 +49,33 @@ async def make_photoshoot(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer()
 
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+
+
     total = await count_active_styles()
     if total == 0:
         await callback.message.answer(
-            "Стили ещё не настроены. Обратись, пожалуйста, к администратору."
+            "Стили ещё не настроены. Обратись, пожалуйста, к администратору.",
+            reply_markup=back_to_main_menu_keyboard()
         )
         return
 
     current_index = 0
     style = await get_style_by_offset(current_index)
     if style is None:
-        await callback.message.answer(
-            "Не удалось загрузить стиль. Попробуй позже или обратись к администратору."
+        await callback.message.edit_text(
+            "Не удалось загрузить стиль. Попробуй позже или обратись к администратору.",
+            reply_markup=back_to_main_menu_keyboard()
         )
         return
 
     await state.update_data(current_style_index=current_index)
 
     inline_keyboard_markup = get_styles_keyboard()
+
 
     await callback.message.answer_photo(
         photo=FSInputFile(str(IMG_DIR / style.image_filename)),
@@ -182,6 +202,7 @@ async def make_photoshoot(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer()
     await callback.message.answer(text, reply_markup=inline_keyboard_markup)
+
 
 
 @router.callback_query(F.data == "back_to_album")
@@ -315,16 +336,25 @@ async def handle_selfie(message: Message, state: FSMContext):
         )
         return
 
-    # 4. Отправляем результат
-    await message.answer_photo(
+    # 4. Отправляем результат и сохраняем file_id последнего фото в state
+    sent_message = await message.answer_photo(
         photo=generated_photo,
         caption="Готово! Вот твоё фото в 4K качестве ✨",
     )
 
+    # у отправленного сообщения есть список размеров photo, берём последний
+    if sent_message.photo:
+        generated_file_id = sent_message.photo[-1].file_id
+        await state.update_data(
+            last_generated_file_id=generated_file_id,
+            last_generated_style_title=style_title,
+        )
+
     await message.answer(
-        "Создать ещё одну фотосессию?",
+        "Что дальше?",
         reply_markup=get_after_photoshoot_keyboard(),
     )
+
 
 
 @router.message(MainStates.making_photoshoot_process)
@@ -339,6 +369,10 @@ async def handle_not_photo(message: Message, state: FSMContext):
 async def back_to_main_menu(callback: CallbackQuery, state: FSMContext):
     await state.set_state(MainStates.start)
     await callback.answer()
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        pass
     await callback.message.answer(
         "Привет! Я делаю профессиональные фотосессии из обычного селфи\n"
         "\nВыбери любой стиль и получи фото как у моделей за 2 минуты\n"
@@ -352,3 +386,51 @@ async def back_to_main_menu(callback: CallbackQuery, state: FSMContext):
 async def create_another_photoshoot(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await get_album(callback.message, state)
+
+@router.callback_query(F.data == "make_avatar")
+async def make_avatar_from_last(callback: CallbackQuery, state: FSMContext):
+    """
+    Делаем аватаром последнее сгенерированное фото.
+    Берём file_id из FSM (last_generated_file_id).
+    """
+    data = await state.get_data()
+    file_id = data.get("last_generated_file_id")
+    style_title = data.get("last_generated_style_title") or data.get("current_style_title")
+
+    if not file_id:
+        await callback.answer(
+            "Не удалось найти последнее сгенерированное фото. "
+            "Сначала сделай фотосессию.",
+            show_alert=True,
+        )
+        return
+
+    # Проверяем лимит аватаров
+    avatars = await get_user_avatars(callback.from_user.id)
+    if len(avatars) >= MAX_AVATARS_PER_USER:
+        await callback.answer(
+            "У тебя уже 3 аватара. Удали один в личном кабинете, чтобы добавить новый.",
+            show_alert=True,
+        )
+        return
+
+    avatar = await create_user_avatar(
+        telegram_id=callback.from_user.id,
+        file_id=file_id,
+        source_style_title=style_title,
+    )
+
+    if avatar is None:
+        # На всякий случай, если что-то пошло не так
+        await callback.answer(
+            "Не удалось сохранить аватар. Попробуй позже.",
+            show_alert=True,
+        )
+        return
+
+    await callback.answer("Аватар сохранён ✅", show_alert=False)
+    await callback.message.answer(
+        f"Супер! Это фото сохранено как твой аватар. "
+        f"Всего аватаров: {len(avatars) + 1}/{MAX_AVATARS_PER_USER}.\n\n"
+        "Посмотреть и удалить аватары можно в разделе «Личный кабинет»."
+    )

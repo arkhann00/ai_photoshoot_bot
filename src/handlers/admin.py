@@ -198,7 +198,7 @@ def format_user_line(user) -> str:
 
 # ---------- Команда /admin ----------
 
-@router.message(F.text == "/admin")
+@router.message(F.text == "/admin" or F.text == "admin")
 async def admin_start(message: Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
         return
@@ -676,7 +676,7 @@ async def admin_style_add_prompt(message: Message, state: FSMContext):
     await state.set_state(AdminStates.add_style_image)
 
     await message.answer(
-        "Прищли сюда фото для стиля>",
+        "Прищли сюда фото для стиля",
     )
 
 @router.message(AdminStates.add_style_image)

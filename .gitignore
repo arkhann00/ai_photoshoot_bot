@@ -1,3 +1,4 @@
 .env
 .gitignore
-bot.db
+bot_data
+img

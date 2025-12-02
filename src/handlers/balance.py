@@ -83,7 +83,7 @@ async def format_balance_message(telegram_id: int) -> str:
     sessions_left = calc_photosessions_left(balance_rub)
 
     return (
-        f"Ваш баланс: {balance_rub} ₽ (остаток на {sessions_left} фотосессий)\n\n"
+        f"Ваш баланс: {balance_rub} ₽ \n\n"
         "Пополните баланс и получите бонусы:\n\n"
         "290 ₽ → 350 ₽ на счёт (+20 %)\n"
         "790 ₽ → 1 000 ₽ на счёт (+26 %)\n"
