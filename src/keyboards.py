@@ -71,7 +71,7 @@ def get_styles_keyboard() -> InlineKeyboardMarkup:
     """
     Клавиатура под стилями:
     - влево/вправо
-    - "Сделать такую же"
+    - "Сделать такую же | 49 рублей"
     - "Назад" в главное меню
     """
     left_inline_button = InlineKeyboardButton(
@@ -83,7 +83,7 @@ def get_styles_keyboard() -> InlineKeyboardMarkup:
         callback_data="next",
     )
     make_photoshoot_button = InlineKeyboardButton(
-        text="Сделать такую же",
+        text="Сделать такую же | 49 рублей",
         callback_data="make_photoshoot",
     )
     back_button = InlineKeyboardButton(
