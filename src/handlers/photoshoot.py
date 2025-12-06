@@ -774,8 +774,8 @@ async def handle_selfie(message: Message, state: FSMContext):
         return
 
     # 4. Отправляем результат и сохраняем file_id последнего фото в state
-    sent_message = await message.answer_photo(
-        photo=generated_photo,
+    sent_message = await message.answer_document(
+        document=generated_photo,  # тот же объект, что раньше был в photo
         caption="Готово! Вот твоё фото в 4K качестве ✨",
     )
 
