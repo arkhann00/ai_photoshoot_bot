@@ -12,7 +12,7 @@ from aiogram.types import (
 
 from src.paths import IMG_DIR
 from src.states import MainStates
-from src.data.styles import styles
+from src.data.styles import styles, PHOTOSHOOT_PRICE
 from src.keyboards import (
     get_styles_keyboard,
     get_balance_keyboard,
@@ -20,109 +20,550 @@ from src.keyboards import (
     get_back_to_album_keyboard,
     get_start_keyboard,
     get_photoshoot_entry_keyboard,
-    back_to_main_menu_keyboard
+    back_to_main_menu_keyboard,
+    get_gender_keyboard,
+    get_categories_keyboard,
+    get_categories_carousel_keyboard,
 )
-from src.db import log_photoshoot, PhotoshootStatus
-from src.services.photoshoot import generate_photoshoot_image
-from src.db import consume_photoshoot_credit_or_balance
-from src.db import get_style_by_offset, count_active_styles
-from src.data.styles import PHOTOSHOOT_PRICE
-from src.services.admins import is_admin  # <-- добавили
+from src.services.photoshoot import generate_photoshoot_image, logger
+from src.services.admins import is_admin
+
 from src.db import (
     log_photoshoot,
     PhotoshootStatus,
     consume_photoshoot_credit_or_balance,
     get_style_by_offset,
     count_active_styles,
-    get_user_avatars,          # новый импорт
-    create_user_avatar,        # новый импорт
-    MAX_AVATARS_PER_USER,      # новый импорт
+    get_user_avatars,
+    create_user_avatar,
+    MAX_AVATARS_PER_USER,
+    get_style_prompt_by_id,
+    get_styles_by_category_and_gender,
+    StyleGender,
+    get_all_style_categories,
+    get_style_categories_for_gender,
 )
 
 router = Router()
 
 
+async def _send_photo_with_fallback(
+    callback: CallbackQuery,
+    image_filename: str,
+    caption: str,
+    keyboard: InlineKeyboardMarkup,
+) -> None:
+    """
+    Универсальный хелпер:
+    - проверяет наличие файла;
+    - пробует edit_media;
+    - если не вышло — answer_photo;
+    - если и это не вышло (IMAGE_PROCESS_FAILED и т.п.) — шлёт текст и не роняет бота.
+    """
+    image_path = IMG_DIR / image_filename
+    logger.info("Пробую отправить изображение: %s", image_path)
+
+    # Проверяем, что файл реально существует
+    if not image_path.exists():
+        logger.error("Файл картинки не найден: %s", image_path)
+        await callback.message.answer(
+            "Не удалось найти файл картинки для этого стиля. "
+            "Попробуй выбрать другой стиль или обратись к администратору."
+        )
+        return
+
+    file = FSInputFile(str(image_path))
+
+    try:
+        await callback.message.edit_media(
+            media=InputMediaPhoto(
+                media=file,
+                caption=caption,
+            ),
+            reply_markup=keyboard,
+        )
+    except TelegramBadRequest as e:
+        err_text = str(e)
+        # Классический кейс "message is not modified" — просто игнорируем
+        if "message is not modified" in err_text:
+            logger.debug("message is not modified для %s", image_path)
+            return
+
+        logger.warning(
+            "edit_media не удался для %s (%s), пробую отправить новое фото",
+            image_path,
+            err_text,
+        )
+        try:
+            await callback.message.answer_photo(
+                photo=file,
+                caption=caption,
+                reply_markup=keyboard,
+            )
+        except TelegramBadRequest as e2:
+            # Вот здесь как раз всплывает IMAGE_PROCESS_FAILED
+            logger.error(
+                "answer_photo тоже упал для %s: %s",
+                image_path,
+                e2,
+            )
+            await callback.message.answer(
+                "Не удалось отправить картинку 😔\n"
+                "Похоже, файл повреждён или Telegram не смог его обработать.\n"
+                "Попробуй выбрать другой стиль или категорию."
+            )
+
+
 @router.callback_query(F.data == "make_photo")
-async def make_photoshoot(callback: CallbackQuery, state: FSMContext):
-    # переводим пользователя в состояние выбора стиля
-    await state.set_state(MainStates.making_photoshoot)
+async def make_photoshoot_entry(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await state.set_state(MainStates.choose_gender)
 
     await callback.answer()
 
+    await callback.message.edit_text(
+        "Кого будем фоткать? 😊\n\nВыбери пол:",
+        reply_markup=get_gender_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "gender_female")
+async def choose_gender_female(callback: CallbackQuery, state: FSMContext):
+    await _handle_gender_choice(callback, state, StyleGender.female)
+
+
+@router.callback_query(F.data == "gender_male")
+async def choose_gender_male(callback: CallbackQuery, state: FSMContext):
+    await _handle_gender_choice(callback, state, StyleGender.male)
+
+
+async def _handle_gender_choice(
+    callback: CallbackQuery,
+    state: FSMContext,
+    gender: StyleGender,
+):
+    categories = await get_style_categories_for_gender(gender)
+    if not categories:
+        await callback.message.edit_text(
+            "Для этого пола ещё нет категорий стилей.\n"
+            "Обратись, пожалуйста, к администратору.",
+            reply_markup=get_start_keyboard(),
+        )
+        await callback.answer()
+        return
+
+    category_ids = [c.id for c in categories]
+    current_index = 0
+    current_category = categories[current_index]
+
+    await state.update_data(
+        current_gender=gender.value,
+        category_ids=category_ids,
+        current_category_index=current_index,
+    )
+    await state.set_state(MainStates.choose_category)
+
+    keyboard = get_categories_carousel_keyboard()
+    caption = (
+        f"<b>{current_category.title}</b>\n\n"
+        f"<i>{current_category.description}</i>"
+    )
+
+    await _send_photo_with_fallback(
+        callback=callback,
+        image_filename=current_category.image_filename,
+        caption=caption,
+        keyboard=keyboard,
+    )
+
+    await callback.answer()
+
+
+async def _show_current_category(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    category_ids: list[int] = data.get("category_ids") or []
+    current_index = data.get("current_category_index", 0)
+
+    if not category_ids:
+        await callback.answer("Категории не найдены.")
+        return
+
+    from src.db import get_style_category_by_id
+
+    if current_index < 0 or current_index >= len(category_ids):
+        current_index = 0
+
+    category_id = category_ids[current_index]
+    category = await get_style_category_by_id(category_id)
+    if category is None:
+        await callback.answer("Не удалось загрузить категорию.")
+        return
+
+    await state.update_data(current_category_index=current_index)
+
+    keyboard = get_categories_carousel_keyboard()
+    caption = f"<b>{category.title}</b>\n\n<i>{category.description}</i>"
+
+    await _send_photo_with_fallback(
+        callback=callback,
+        image_filename=category.image_filename,
+        caption=caption,
+        keyboard=keyboard,
+    )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cat_next")
+async def cat_next(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    category_ids: list[int] = data.get("category_ids") or []
+    current_index = data.get("current_category_index", 0)
+
+    if not category_ids:
+        await callback.answer("Категории не найдены.")
+        return
+
+    total = len(category_ids)
+    new_index = (current_index + 1) % total
+
+    await state.update_data(current_category_index=new_index)
+    await _show_current_category(callback, state)
+
+
+@router.callback_query(F.data == "cat_previous")
+async def cat_previous(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    category_ids: list[int] = data.get("category_ids") or []
+    current_index = data.get("current_category_index", 0)
+
+    if not category_ids:
+        await callback.answer("Категории не найдены.")
+        return
+
+    total = len(category_ids)
+    new_index = (current_index - 1) % total
+
+    await state.update_data(current_category_index=new_index)
+    await _show_current_category(callback, state)
+
+
+@router.callback_query(F.data == "back_to_gender")
+async def back_to_gender(callback: CallbackQuery, state: FSMContext):
+    # Возвращаемся в состояние выбора пола
+    await state.set_state(MainStates.choose_gender)
+
+    text = "Кого будем фоткать? 😊\n\nВыбери пол:"
+
+
+
     try:
         await callback.message.delete()
-    except TelegramBadRequest:
-        pass
-
-
-    total = await count_active_styles()
-    if total == 0:
+        # Если текущее сообщение текстовое — попробуем отредактировать его
         await callback.message.answer(
-            "Стили ещё не настроены. Обратись, пожалуйста, к администратору.",
-            reply_markup=back_to_main_menu_keyboard()
+            text,
+            reply_markup=get_gender_keyboard(),
         )
+    except TelegramBadRequest as e:
+        err = str(e)
+        # Если это фотосообщение / нет текста — просто шлём новое сообщение
+        if "there is no text in the message to edit" in err or "message can't be edited" in err:
+            await callback.message.answer(
+                text,
+                reply_markup=get_gender_keyboard(),
+            )
+        else:
+            # Любую другую ошибку важно не проглатывать, чтобы не скрыть баг
+            raise
+
+    await callback.answer()
+
+
+
+@router.callback_query(F.data == "cat_select")
+async def cat_select(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+
+    category_ids: list[int] = data.get("category_ids") or []
+    current_index = data.get("current_category_index", 0)
+    gender_str = data.get("current_gender")
+
+    if not category_ids or gender_str is None:
+        await callback.answer("Сначала выбери пол и категорию.")
         return
 
-    current_index = 0
-    style = await get_style_by_offset(current_index)
-    if style is None:
-        await callback.message.edit_text(
-            "Не удалось загрузить стиль. Попробуй позже или обратись к администратору.",
-            reply_markup=back_to_main_menu_keyboard()
-        )
+    try:
+        gender = StyleGender(gender_str)
+    except Exception:
+        await callback.answer("Некорректный пол.")
         return
 
-    await state.update_data(current_style_index=current_index)
+    if current_index < 0 or current_index >= len(category_ids):
+        current_index = 0
 
-    inline_keyboard_markup = get_styles_keyboard()
+    category_id = category_ids[current_index]
 
-
-    await callback.message.answer_photo(
-        photo=FSInputFile(str(IMG_DIR / style.image_filename)),
-        caption=f"<b>{style.title}</b>\n\n<i>{style.description}</i>",
-        reply_markup=inline_keyboard_markup,
+    styles = await get_styles_by_category_and_gender(
+        category_id=category_id,
+        gender=gender,
     )
+
+    if not styles:
+        await callback.answer(
+            "В этой категории нет стилей для выбранного пола.",
+            show_alert=True,
+        )
+        return
+
+    style_ids = [s.id for s in styles]
+    style_index = 0
+    style = styles[style_index]
+
+    await state.update_data(
+        current_category_id=category_id,
+        style_ids=style_ids,
+        current_style_index=style_index,
+        current_style_title=style.title,
+        current_style_prompt=style.prompt,
+    )
+    await state.set_state(MainStates.choose_style)
+
+    keyboard = get_styles_keyboard()
+    caption = f"<b>{style.title}</b>\n\n<i>{style.description}</i>"
+
+
+    await _send_photo_with_fallback(
+        callback=callback,
+        image_filename=style.image_filename,
+        caption=caption,
+        keyboard=keyboard,
+    )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "style_next")
+async def style_next(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    style_ids: list[int] = data.get("style_ids") or []
+    current_index = data.get("current_style_index", 0)
+
+    if not style_ids:
+        await callback.answer("Стили не найдены.")
+        return
+
+    total = len(style_ids)
+    if total == 1:
+        await callback.answer("Пока доступен только один стиль 😊")
+        return
+
+    new_index = (current_index + 1) % total
+    style_id = style_ids[new_index]
+    style = await get_style_prompt_by_id(style_id)
+    if style is None:
+        await callback.answer("Не удалось загрузить стиль.")
+        return
+
+    await state.update_data(
+        current_style_index=new_index,
+        current_style_title=style.title,
+        current_style_prompt=style.prompt,
+    )
+
+    keyboard = get_styles_keyboard()
+    caption = f"<b>{style.title}</b>\n\n<i>{style.description}</i>"
+
+    await _send_photo_with_fallback(
+        callback=callback,
+        image_filename=style.image_filename,
+        caption=caption,
+        keyboard=keyboard,
+    )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "style_previous")
+async def style_previous(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    style_ids: list[int] = data.get("style_ids") or []
+    current_index = data.get("current_style_index", 0)
+
+    if not style_ids:
+        await callback.answer("Стили не найдены.")
+        return
+
+    total = len(style_ids)
+    if total == 1:
+        await callback.answer("Пока доступен только один стиль 😊")
+        return
+
+    new_index = (current_index - 1) % total
+    style_id = style_ids[new_index]
+    style = await get_style_prompt_by_id(style_id)
+    if style is None:
+        await callback.answer("Не удалось загрузить стиль.")
+        return
+
+    await state.update_data(
+        current_style_index=new_index,
+        current_style_title=style.title,
+        current_style_prompt=style.prompt,
+    )
+
+    keyboard = get_styles_keyboard()
+    caption = f"<b>{style.title}</b>\n\n<i>{style.description}</i>"
+
+    await _send_photo_with_fallback(
+        callback=callback,
+        image_filename=style.image_filename,
+        caption=caption,
+        keyboard=keyboard,
+    )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "back_to_categories_carousel")
+async def back_to_categories_carousel(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(MainStates.choose_category)
+    await _show_current_category(callback, state)
+
+
+@router.callback_query(F.data.startswith("style_category:"))
+async def choose_category(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    gender_str = data.get("current_gender")
+    if not gender_str:
+        await callback.answer("Сначала выбери пол.")
+        return
+
+    try:
+        gender = StyleGender(gender_str)
+    except Exception:
+        await callback.answer("Некорректный пол в состоянии, попробуй заново.")
+        await state.set_state(MainStates.choose_gender)
+        await callback.message.edit_text(
+            "Кого будем фоткать?",
+            reply_markup=get_gender_keyboard(),
+        )
+        return
+
+    try:
+        category_id_str = callback.data.split(":", 1)[1]
+        category_id = int(category_id_str)
+    except Exception:
+        await callback.answer("Некорректная категория.")
+        return
+
+    styles = await get_styles_by_category_and_gender(
+        category_id=category_id,
+        gender=gender,
+    )
+
+    if not styles:
+        await callback.answer(
+            "В этой категории пока нет стилей для выбранного пола.",
+            show_alert=True,
+        )
+        return
+
+    style_ids = [s.id for s in styles]
+    current_index = 0
+    current_style = styles[current_index]
+
+    await state.update_data(
+        current_category_id=category_id,
+        current_gender=gender.value,
+        style_ids=style_ids,
+        current_style_index=current_index,
+        current_style_title=current_style.title,
+        current_style_prompt=current_style.prompt,
+    )
+
+    await state.set_state(MainStates.choose_style)
+
+    caption = (
+        f"<b>{current_style.title}</b>\n\n<i>{current_style.description}</i>"
+    )
+
+    await _send_photo_with_fallback(
+        callback=callback,
+        image_filename=current_style.image_filename,
+        caption=caption,
+        keyboard=get_styles_keyboard(),
+    )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "back_to_categories")
+async def back_to_categories(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    gender_str = data.get("current_gender")
+    if not gender_str:
+        await callback.answer()
+        await callback.message.edit_text(
+            "Кого будем фоткать?",
+            reply_markup=get_gender_keyboard(),
+        )
+        await state.set_state(MainStates.choose_gender)
+        return
+
+    categories = await get_all_style_categories(include_inactive=False)
+    if not categories:
+        await callback.message.edit_text(
+            "Категории стилей ещё не созданы.",
+            reply_markup=get_start_keyboard(),
+        )
+        await callback.answer()
+        return
+
+    await state.set_state(MainStates.choose_category)
+    await callback.message.edit_text(
+        "Выбери категорию стиля:",
+        reply_markup=get_categories_keyboard(categories),
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data == "next")
 async def next_style(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
+    style_ids: list[int] = data.get("style_ids") or []
     current_index = data.get("current_style_index", 0)
 
-    total = await count_active_styles()
-    if total == 0:
-        await callback.answer("Стили не найдены.")
+    if not style_ids:
+        await callback.answer("Стили не найдены для этой категории.")
         return
 
-    # Если только один стиль — листать нечего
+    total = len(style_ids)
     if total == 1:
         await callback.answer("Пока доступен только один стиль 😊", show_alert=False)
         return
 
     new_index = (current_index + 1) % total
-    await state.update_data(current_style_index=new_index)
-
-    style = await get_style_by_offset(new_index)
+    style_id = style_ids[new_index]
+    style = await get_style_prompt_by_id(style_id)
     if style is None:
         await callback.answer("Не удалось загрузить стиль.")
         return
 
-    inline_keyboard_markup = get_styles_keyboard()
+    await state.update_data(
+        current_style_index=new_index,
+        current_style_title=style.title,
+        current_style_prompt=style.prompt,
+    )
 
-    try:
-        await callback.message.edit_media(
-            media=InputMediaPhoto(
-                media=FSInputFile(str(IMG_DIR / style.image_filename)),
-                caption=f"<b>{style.title}</b>\n\n<i>{style.description}</i>",
-            ),
-            reply_markup=inline_keyboard_markup,
-        )
-    except TelegramBadRequest as e:
-        # Если контент реально не изменился — просто игнорируем
-        if "message is not modified" in str(e):
-            await callback.answer()
-            return
-        raise
+    inline_keyboard_markup = get_styles_keyboard()
+    caption = f"<b>{style.title}</b>\n\n<i>{style.description}</i>"
+
+    await _send_photo_with_fallback(
+        callback=callback,
+        image_filename=style.image_filename,
+        caption=caption,
+        keyboard=inline_keyboard_markup,
+    )
 
     await callback.answer()
 
@@ -130,41 +571,40 @@ async def next_style(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "previous")
 async def previous_style(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
+    style_ids: list[int] = data.get("style_ids") or []
     current_index = data.get("current_style_index", 0)
 
-    total = await count_active_styles()
-    if total == 0:
-        await callback.answer("Стили не найдены.")
+    if not style_ids:
+        await callback.answer("Стили не найдены для этой категории.")
         return
 
-    # Если только один стиль — листать нечего
+    total = len(style_ids)
     if total == 1:
         await callback.answer("Пока доступен только один стиль 😊", show_alert=False)
         return
 
     new_index = (current_index - 1) % total
-    await state.update_data(current_style_index=new_index)
-
-    style = await get_style_by_offset(new_index)
+    style_id = style_ids[new_index]
+    style = await get_style_prompt_by_id(style_id)
     if style is None:
         await callback.answer("Не удалось загрузить стиль.")
         return
 
-    inline_keyboard_markup = get_styles_keyboard()
+    await state.update_data(
+        current_style_index=new_index,
+        current_style_title=style.title,
+        current_style_prompt=style.prompt,
+    )
 
-    try:
-        await callback.message.edit_media(
-            media=InputMediaPhoto(
-                media=FSInputFile(str(IMG_DIR / style.image_filename)),
-                caption=f"<b>{style.title}</b>\n\n<i>{style.description}</i>",
-            ),
-            reply_markup=inline_keyboard_markup,
-        )
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            await callback.answer()
-            return
-        raise
+    inline_keyboard_markup = get_styles_keyboard()
+    caption = f"<b>{style.title}</b>\n\n<i>{style.description}</i>"
+
+    await _send_photo_with_fallback(
+        callback=callback,
+        image_filename=style.image_filename,
+        caption=caption,
+        keyboard=inline_keyboard_markup,
+    )
 
     await callback.answer()
 
@@ -172,27 +612,25 @@ async def previous_style(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "make_photoshoot")
 async def make_photoshoot(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    current_index = data.get("current_style_index", 0)
+    style_title = data.get("current_style_title")
+    style_prompt = data.get("current_style_prompt")
 
-    style = await get_style_by_offset(current_index)
-    if style is None:
-        await callback.answer("Не удалось загрузить стиль.")
+    if not style_title or not style_prompt:
+        await callback.answer("Не удалось определить текущий стиль.")
         return
 
-    await state.update_data(
-        current_style_index=current_index,
-        current_style_title=style.title,
-        current_style_prompt=style.prompt,
-    )
     await state.set_state(MainStates.making_photoshoot_process)
 
-    back_inline_button = InlineKeyboardButton(text="Назад", callback_data="next")
+    back_inline_button = InlineKeyboardButton(
+        text="« Назад к стилям",
+        callback_data="back_to_categories",
+    )
     inline_keyboard_markup = InlineKeyboardMarkup(
         inline_keyboard=[[back_inline_button]]
     )
 
     text = (
-        f"Отлично! Выбран стиль «{style.title}»\n\n"
+        f"Отлично! Выбран стиль «{style_title}»\n\n"
         "Теперь пришли своё селфи:\n"
         "— лицо прямо,\n"
         "— хорошее освещение,\n"
@@ -202,7 +640,6 @@ async def make_photoshoot(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer()
     await callback.message.answer(text, reply_markup=inline_keyboard_markup)
-
 
 
 @router.callback_query(F.data == "back_to_album")
@@ -311,7 +748,7 @@ async def handle_selfie(message: Message, state: FSMContext):
             telegram_id=message.from_user.id,
             style_title=style_title,
             status=PhotoshootStatus.success,
-            cost_rub=log_cost_rub,
+            cost_rub=log_cost_rub,  # 0 для админа, PHOTOSHOOT_PRICE для обычного
             cost_credits=0,
             provider="comet_gemini_2_5_flash",
         )
@@ -356,7 +793,6 @@ async def handle_selfie(message: Message, state: FSMContext):
     )
 
 
-
 @router.message(MainStates.making_photoshoot_process)
 async def handle_not_photo(message: Message, state: FSMContext):
     await message.answer(
@@ -371,7 +807,7 @@ async def back_to_main_menu(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     try:
         await callback.message.delete()
-    except Exception as e:
+    except Exception:
         pass
     await callback.message.answer(
         "Привет! Я делаю профессиональные фотосессии из обычного селфи\n"
@@ -386,6 +822,7 @@ async def back_to_main_menu(callback: CallbackQuery, state: FSMContext):
 async def create_another_photoshoot(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await get_album(callback.message, state)
+
 
 @router.callback_query(F.data == "make_avatar")
 async def make_avatar_from_last(callback: CallbackQuery, state: FSMContext):

@@ -68,27 +68,21 @@ def get_photoshoot_entry_keyboard() -> ReplyKeyboardMarkup:
 
 
 def get_styles_keyboard() -> InlineKeyboardMarkup:
-    """
-    Клавиатура под стилями:
-    - влево/вправо
-    - "Сделать такую же | 49 рублей"
-    - "Назад" в главное меню
-    """
     left_inline_button = InlineKeyboardButton(
         text="⬅️",
-        callback_data="previous",
+        callback_data="style_previous",
     )
     right_inline_button = InlineKeyboardButton(
         text="➡️",
-        callback_data="next",
+        callback_data="style_next",
     )
     make_photoshoot_button = InlineKeyboardButton(
-        text="Сделать такую же | 49 рублей",
+        text="Сделать такую же",
         callback_data="make_photoshoot",
     )
     back_button = InlineKeyboardButton(
-        text="« Назад",
-        callback_data="back_to_main_menu",
+        text="« Назад к категориям",
+        callback_data="back_to_categories_carousel",
     )
 
     inline_keyboard_markup = InlineKeyboardMarkup(
@@ -99,6 +93,7 @@ def get_styles_keyboard() -> InlineKeyboardMarkup:
         ]
     )
     return inline_keyboard_markup
+
 
 
 def get_balance_keyboard() -> InlineKeyboardMarkup:
@@ -167,3 +162,80 @@ def get_back_to_album_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[[back_inline_button]],
     )
     return inline_keyboard_markup
+
+from src.db import StyleCategory
+
+def get_gender_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👩 Женский",
+                    callback_data="gender_female",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👨 Мужской",
+                    callback_data="gender_male",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="« Назад",
+                    callback_data="back_to_main_menu",
+                )
+            ],
+        ]
+    )
+
+def get_categories_carousel_keyboard() -> InlineKeyboardMarkup:
+    left_button = InlineKeyboardButton(
+        text="⬅️",
+        callback_data="cat_previous",
+    )
+    right_button = InlineKeyboardButton(
+        text="➡️",
+        callback_data="cat_next",
+    )
+    select_button = InlineKeyboardButton(
+        text="Выбрать категорию",
+        callback_data="cat_select",
+    )
+    back_button = InlineKeyboardButton(
+        text="« Назад",
+        callback_data="back_to_gender",
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [left_button, right_button],
+            [select_button],
+            [back_button],
+        ]
+    )
+
+
+def get_categories_keyboard(categories: list[StyleCategory]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for cat in categories:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=cat.title,
+                    callback_data=f"style_category:{cat.id}",
+                )
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="« Назад",
+                callback_data="make_photo",  # вернёмся к выбору пола
+            )
+        ]
+    )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)

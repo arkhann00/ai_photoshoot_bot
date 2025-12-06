@@ -12,7 +12,31 @@ services:
     environment:
       TZ: "Europe/Moscow"
 
-    # ВАЖНО: сохраняем базу и папку с картинками за пределами контейнера
     volumes:
       - ./bot_data:/app/bot_data
       - ./img:/app/img
+
+  backend:
+    build: .
+    container_name: ai_photoshoot_backend
+    restart: always
+
+    env_file:
+      - .env
+
+    environment:
+      TZ: "Europe/Moscow"
+
+    volumes:
+      - ./bot_data:/app/bot_data
+      - ./img:/app/img
+
+    ports:
+      - "8000:8000"
+
+    command: [
+      "uvicorn",
+      "src.api.main:app",
+      "--host", "0.0.0.0",
+      "--port", "8000"
+    ]

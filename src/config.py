@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     BOT_TOKEN: str
     DATABASE_URL: str
     COMET_API_KEY: str
+    BOT_USERNAME: str | None = None  # НОВОЕ: username бота для реф-ссылок
 
     # .env ищем в корне проекта, откуда ты запускаешь `python src/main.py`
     model_config = SettingsConfigDict(
