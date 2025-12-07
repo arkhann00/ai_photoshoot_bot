@@ -496,13 +496,12 @@ async def choose_category(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer()
 
-
 @router.callback_query(F.data == "back_to_categories")
 async def back_to_categories(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     gender_str = data.get("current_gender")
     if not gender_str:
-        await callback.answer()
+        await safe_callback_answer(callback)
         await callback.message.edit_text(
             "Кого будем фоткать?",
             reply_markup=get_gender_keyboard(),
@@ -516,7 +515,7 @@ async def back_to_categories(callback: CallbackQuery, state: FSMContext):
             "Категории стилей ещё не созданы.",
             reply_markup=get_start_keyboard(),
         )
-        await callback.answer()
+        await safe_callback_answer(callback)
         return
 
     await state.set_state(MainStates.choose_category)
@@ -524,7 +523,8 @@ async def back_to_categories(callback: CallbackQuery, state: FSMContext):
         "Выбери категорию стиля:",
         reply_markup=get_categories_keyboard(categories),
     )
-    await callback.answer()
+    await safe_callback_answer(callback)
+
 
 
 @router.callback_query(F.data == "next")
@@ -690,10 +690,21 @@ async def handle_selfie(message: Message, state: FSMContext):
     style_title = data.get("current_style_title", "выбранный стиль")
     style_prompt = data.get("current_style_prompt")
 
+    # Если генерация уже идёт — не запускаем ещё одну
+    if data.get("is_generating"):
+        await message.answer(
+            "Я уже готовлю твою фотосессию по этому запросу 🙌\n"
+            "Дождись, пожалуйста, результата."
+        )
+        return
+
     user_photo = message.photo[-1]
     user_photo_file_id = user_photo.file_id
 
-    await state.update_data(user_photo_file_id=user_photo_file_id)
+    await state.update_data(
+        user_photo_file_id=user_photo_file_id,
+        is_generating=True,
+    )
 
     # Проверяем, админ ли пользователь
     user_is_admin = await is_admin(message.from_user.id)
@@ -707,6 +718,7 @@ async def handle_selfie(message: Message, state: FSMContext):
 
         # 2. Если баланс / кредиты не хватает — показываем экран из макета
         if not can_pay:
+            await state.update_data(is_generating=False)
             await state.set_state(MainStates.making_photoshoot_failed)
             text = (
                 "Недостаточно средств на балансе.\n"
@@ -739,7 +751,7 @@ async def handle_selfie(message: Message, state: FSMContext):
         generated_photo = await generate_photoshoot_image(
             style_title=style_title,
             style_prompt=style_prompt,
-            user_photo_file_id=user_photo_file_id,
+            user_photo_file_ids=user_photo_file_id,  # <-- правильное имя аргумента
             bot=message.bot,
         )
 
@@ -748,7 +760,7 @@ async def handle_selfie(message: Message, state: FSMContext):
             telegram_id=message.from_user.id,
             style_title=style_title,
             status=PhotoshootStatus.success,
-            cost_rub=log_cost_rub,  # 0 для админа, PHOTOSHOOT_PRICE для обычного
+            cost_rub=log_cost_rub,
             cost_credits=0,
             provider="comet_gemini_2_5_flash",
         )
@@ -765,6 +777,7 @@ async def handle_selfie(message: Message, state: FSMContext):
             error_message=str(e),
         )
 
+        await state.update_data(is_generating=False)
         await state.set_state(MainStates.making_photoshoot_failed)
         await message.answer(
             "Упс… Что-то пошло не так при генерации фото 😔\n"
@@ -775,11 +788,10 @@ async def handle_selfie(message: Message, state: FSMContext):
 
     # 4. Отправляем результат и сохраняем file_id последнего фото в state
     sent_message = await message.answer_document(
-        document=generated_photo,  # тот же объект, что раньше был в photo
+        document=generated_photo,
         caption="Готово! Вот твоё фото в 4K качестве ✨",
     )
 
-    # у отправленного сообщения есть список размеров photo, берём последний
     if sent_message.photo:
         generated_file_id = sent_message.photo[-1].file_id
         await state.update_data(
@@ -787,10 +799,26 @@ async def handle_selfie(message: Message, state: FSMContext):
             last_generated_style_title=style_title,
         )
 
+    await state.update_data(is_generating=False)
+
     await message.answer(
         "Что дальше?",
         reply_markup=get_after_photoshoot_keyboard(),
     )
+
+from aiogram.exceptions import TelegramBadRequest
+
+async def safe_callback_answer(callback: CallbackQuery) -> None:
+    try:
+        await callback.answer()
+    except TelegramBadRequest as e:
+        msg = str(e)
+        # Игнорируем только "query is too old..."
+        if "query is too old and response timeout expired" in msg or "query ID is invalid" in msg:
+            logger.warning("Пропускаю устаревший callback: %s", msg)
+        else:
+            raise
+
 
 
 @router.message(MainStates.making_photoshoot_process)
