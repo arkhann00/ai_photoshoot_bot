@@ -5,7 +5,7 @@ import logging
 import os
 import ssl
 import tempfile
-from typing import Optional
+from typing import Optional, Sequence
 
 import aiohttp
 import certifi
@@ -55,15 +55,17 @@ def _build_prompt(style_title: str, style_prompt: Optional[str]) -> str:
 async def generate_photoshoot_image(
     style_title: str,
     style_prompt: Optional[str],
-    user_photo_file_id: str,
+    user_photo_file_ids: Sequence[str] | str,
     bot: Bot,
 ) -> FSInputFile:
     """
     Основная функция генерации фотосессии через CometAI.
 
-    1. Скачиваем селфи из Telegram.
-    2. Кодируем его в Base64.
-    3. Отправляем запрос в CometAI (gemini-2.5-flash-image-preview).
+    Поддерживает 1, 2 или 3 входных фото из Telegram.
+
+    1. Скачиваем 1–3 фото из Telegram.
+    2. Кодируем каждое в Base64.
+    3. Отправляем один запрос в CometAI (gemini-3-pro-image) с несколькими inline_data.
     4. Достаём Base64-картинку из ответа.
     5. Сохраняем изображение во временный файл и возвращаем FSInputFile.
     """
@@ -72,31 +74,55 @@ async def generate_photoshoot_image(
     if not api_key:
         raise RuntimeError("COMET_API_KEY не задан в конфиге (settings.COMET_API_KEY).")
 
-    # 1. Скачиваем фото из Telegram
-    try:
-        original_photo_bytes = await _download_telegram_photo(bot, user_photo_file_id)
-    except Exception as e:
-        logger.exception("Ошибка при скачивании фото из Telegram: %s", e)
-        raise RuntimeError("Не удалось скачать фото из Telegram") from e
+    # Приводим параметр к списку file_id
+    if isinstance(user_photo_file_ids, str):
+        file_ids_list = [user_photo_file_ids]
+    else:
+        file_ids_list = list(user_photo_file_ids)
 
-    # 2. Кодируем в Base64 (без префикса data:image/jpeg;base64,)
-    image_b64 = base64.b64encode(original_photo_bytes).decode("utf-8")
+    if not file_ids_list:
+        raise RuntimeError("Не передано ни одного фото для генерации фотосессии.")
+
+    if len(file_ids_list) > 3:
+        raise RuntimeError("Можно использовать не более трёх фотографий для фотосессии.")
+
+    # 1. Скачиваем все фото из Telegram
+    photo_bytes_list: list[bytes] = []
+    for file_id in file_ids_list:
+        try:
+            original_photo_bytes = await _download_telegram_photo(bot, file_id)
+        except Exception as e:
+            logger.exception("Ошибка при скачивании фото из Telegram (file_id=%s): %s", file_id, e)
+            raise RuntimeError("Не удалось скачать одно из фото из Telegram") from e
+        photo_bytes_list.append(original_photo_bytes)
+
+    # 2. Кодируем каждое фото в Base64 (без префикса data:image/jpeg;base64,)
+    image_b64_list: list[str] = [
+        base64.b64encode(photo_bytes).decode("utf-8") for photo_bytes in photo_bytes_list
+    ]
 
     prompt_text = _build_prompt(style_title=style_title, style_prompt=style_prompt)
+
+    # Формируем parts: сначала текст, затем 1–3 inline_data
+    parts: list[dict] = [
+        {"text": prompt_text},
+    ]
+
+    for image_b64 in image_b64_list:
+        parts.append(
+            {
+                "inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": image_b64,
+                }
+            }
+        )
 
     payload = {
         "contents": [
             {
                 "role": "user",
-                "parts": [
-                    {"text": prompt_text},
-                    {
-                        "inline_data": {
-                            "mime_type": "image/jpeg",
-                            "data": image_b64,
-                        }
-                    },
-                ],
+                "parts": parts,
             }
         ],
         "generationConfig": {
@@ -174,9 +200,9 @@ async def generate_photoshoot_image(
         if not candidates:
             raise RuntimeError("Сервис не вернул кандидатов изображения")
 
-        parts = candidates[0].get("content", {}).get("parts", [])
+        parts_response = candidates[0].get("content", {}).get("parts", [])
 
-        for part in parts:
+        for part in parts_response:
             inline_data = part.get("inlineData") or part.get("inline_data")
             if not inline_data:
                 continue
@@ -206,9 +232,12 @@ async def generate_photoshoot_image(
         elif "webp" in mime_type:
             ext = ".webp"
 
+        # Берём первый file_id для имени файла, чтобы было стабильно
+        file_id_for_name = file_ids_list[0]
+
         file_path = os.path.join(
             tmp_dir,
-            f"photoshoot_{user_photo_file_id}{ext}",
+            f"photoshoot_{file_id_for_name}{ext}",
         )
 
         with open(file_path, "wb") as f:

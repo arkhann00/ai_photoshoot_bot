@@ -176,7 +176,6 @@ class StylePrompt(Base):
         server_default=func.now(),
     )
 
-
 class PhotoshootLog(Base):
     __tablename__ = "photoshoot_logs"
 
@@ -191,10 +190,14 @@ class PhotoshootLog(Base):
     provider: Mapped[str] = mapped_column(String(64), default="comet")
     error_message: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
+    # новое поле: сколько входных фото использовалось (1–3)
+    input_photos_count: Mapped[int] = mapped_column(Integer, default=1)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
     )
+
 
 
 MAX_AVATARS_PER_USER = 3
@@ -222,46 +225,36 @@ class UserAvatar(Base):
 # -------------------------------------------------------------------
 
 
-# async def run_manual_migrations() -> None:
+
+async def run_manual_migrations() -> None:
     """
-    # Ручные ALTER TABLE для уже существующей БД.
-    # На свежей БД (после create_all) они спокойно проигнорируются.
-    # """
-    # async with engine.begin() as conn:
-    #     # --- referrer_id в users ---
-    #     try:
-    #         await conn.execute(
-    #             text("ALTER TABLE users ADD COLUMN referrer_id BIGINT")
-    #         )
-    #     except OperationalError as e:
-    #         msg = str(e)
-    #         if (
-    #             "no such table: users" in msg
-    #             or "duplicate column name: referrer_id" in msg
-    #         ):
-    #             # таблица users ещё не создана или колонка уже есть — игнорируем
-    #             pass
-    #         else:
-    #             raise
-    #
-    #     # --- is_active в style_categories ---
-    #     try:
-    #         await conn.execute(
-    #             text(
-    #                 "ALTER TABLE style_categories "
-    #                 "ADD COLUMN is_active BOOLEAN DEFAULT 1"
-    #             )
-    #         )
-    #     except OperationalError as e:
-    #         msg = str(e)
-    #         if (
-    #             "no such table: style_categories" in msg
-    #             or "duplicate column name: is_active" in msg
-    #         ):
-    #             # таблицы ещё нет или колонка уже добавлена — ок
-    #             pass
-    #         else:
-    #             raise
+    Ручные ALTER TABLE для уже существующей БД.
+    На свежей БД (после create_all) они спокойно проигнорируются.
+    """
+    async with engine.begin() as conn:
+        # --- input_photos_count в photoshoot_logs ---
+        try:
+            await conn.execute(
+                text(
+                    "ALTER TABLE photoshoot_logs "
+                    "ADD COLUMN input_photos_count INTEGER DEFAULT 1"
+                )
+            )
+        except OperationalError as e:
+            msg = str(e)
+            # SQLite / Postgres / прочие варианты «колонка уже есть» или «таблицы нет»
+            if (
+                "no such table: photoshoot_logs" in msg
+                or "duplicate column name: input_photos_count" in msg
+                or "column \"input_photos_count\" of relation \"photoshoot_logs\" already exists" in msg
+            ):
+                # таблица ещё не создана или колонка уже добавлена — игнорируем
+                pass
+            else:
+                raise
+
+        # сюда при желании можно вернуть твои старые миграции для users/style_categories и т.п.
+
 
 
 async def init_db() -> None:
@@ -271,7 +264,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # await run_manual_migrations()
+    await run_manual_migrations()
 
 
 # -------------------------------------------------------------------
@@ -585,6 +578,7 @@ async def log_photoshoot(
     cost_credits: int = 0,
     provider: str = "comet_gemini_2_5_flash",
     error_message: Optional[str] = None,
+    input_photos_count: int = 1,
 ) -> PhotoshootLog:
     async with async_session() as session:
         # 1. Лог в таблицу photoshoot_logs
@@ -596,6 +590,7 @@ async def log_photoshoot(
             cost_credits=cost_credits,
             provider=provider,
             error_message=error_message,
+            input_photos_count=input_photos_count,
         )
         session.add(log)
 
@@ -627,6 +622,7 @@ async def log_photoshoot(
         await session.commit()
         await session.refresh(log)
         return log
+
 
 async def get_photoshoot_report(days: int = 7) -> dict:
     since = datetime.utcnow() - timedelta(days=days)
