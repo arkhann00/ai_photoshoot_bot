@@ -138,7 +138,7 @@ def get_after_photoshoot_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="Создать ещё одну фотосессию",
-                    callback_data="create_another_photoshoot",
+                    callback_data="make_photo",
                 )
             ],
             [
