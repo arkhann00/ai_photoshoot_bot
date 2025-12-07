@@ -849,7 +849,7 @@ async def back_to_main_menu(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "create_another_photoshoot")
 async def create_another_photoshoot(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    await get_album(callback.message, state)
+    # await get_album(callback.message, state)
 
 
 @router.callback_query(F.data == "make_avatar")
