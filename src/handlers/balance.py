@@ -27,7 +27,7 @@ from src.db import (
 router = Router()
 
 # Токен платёжного провайдера (Юкасса через BotFather)
-PAYMENT_PROVIDER_TOKEN = "401643678:TEST:exampleyookassatoken123456"
+PAYMENT_PROVIDER_TOKEN = "381764678:TEST:154522"
 
 # Цена одной фотосессии в рублях
 PHOTOSESSION_PRICE_RUB = 50
