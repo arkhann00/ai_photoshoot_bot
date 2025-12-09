@@ -34,8 +34,6 @@ PHOTOSESSION_PRICE_RUB = 50
 
 # Пакеты пополнения: callback_data -> сумма_руб (и платёж, и зачисление)
 TOPUP_OPTIONS: Dict[str, int] = {
-
-    "topup_50": 50,
     "topup_350": 350,
     "topup_1000": 1000,
     "topup_2000": 2000,
