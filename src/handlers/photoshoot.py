@@ -23,7 +23,7 @@ from src.keyboards import (
     back_to_main_menu_keyboard,
     get_gender_keyboard,
     get_categories_keyboard,
-    get_categories_carousel_keyboard,
+    get_categories_carousel_keyboard, get_error_generating_keyboard,
 )
 from src.services.photoshoot import generate_photoshoot_image, logger
 from src.services.admins import is_admin
@@ -783,6 +783,7 @@ async def handle_selfie(message: Message, state: FSMContext):
             "Упс… Что-то пошло не так при генерации фото 😔\n"
             "Сервис обработки временно недоступен.\n"
             "Попробуй, пожалуйста, ещё раз чуть позже.",
+            reply_markup=get_error_generating_keyboard()
         )
         return
 

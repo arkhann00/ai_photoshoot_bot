@@ -216,6 +216,19 @@ def get_categories_carousel_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def get_error_generating_keyboard():
+    choose_gender = InlineKeyboardButton(
+        text="Попробовать ещё раз",
+        callback_data="back_to_gender",
+    )
+    main_menu = InlineKeyboardButton(
+        text="Главное меню",
+        callback_data="back_to_main_menu",
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[choose_gender], [main_menu]]
+    )
+
 def get_categories_keyboard(categories: list[StyleCategory]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
