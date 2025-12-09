@@ -1,7 +1,7 @@
 # src/handlers/balance.py
 
 import asyncio
-from typing import Dict, Tuple
+from typing import Dict
 
 from aiogram import Router, F, Bot
 from aiogram.types import (
@@ -27,16 +27,16 @@ from src.db import (
 router = Router()
 
 # Токен платёжного провайдера (Юкасса через BotFather)
-PAYMENT_PROVIDER_TOKEN = "381764678:TEST:154522"
+PAYMENT_PROVIDER_TOKEN = "390540012:LIVE:84036"
 
 # Цена одной фотосессии в рублях
 PHOTOSESSION_PRICE_RUB = 50
 
-# Пакеты пополнения: callback_data -> (оплата_руб, зачисление_руб)
-TOPUP_OPTIONS: Dict[str, Tuple[int, int]] = {
-    "topup_290_350": (290, 350),
-    "topup_790_1000": (790, 1000),
-    "topup_1490_2000": (1490, 2000),
+# Пакеты пополнения: callback_data -> сумма_руб (и платёж, и зачисление)
+TOPUP_OPTIONS: Dict[str, int] = {
+    "topup_350": 350,
+    "topup_1000": 1000,
+    "topup_2000": 2000,
 }
 
 
@@ -83,11 +83,12 @@ async def format_balance_message(telegram_id: int) -> str:
     sessions_left = calc_photosessions_left(balance_rub)
 
     return (
-        f"Ваш баланс: {balance_rub} ₽ \n\n"
-        "Пополните баланс и получите бонусы:\n\n"
-        "290 ₽ → 350 ₽ на счёт (+20 %)\n"
-        "790 ₽ → 1 000 ₽ на счёт (+26 %)\n"
-        "1 490 ₽ → 2 000 ₽ на счёт (+34 %)"
+        f"Ваш баланс: {balance_rub} ₽\n"
+        f"Доступно фотосессий по {PHOTOSESSION_PRICE_RUB} ₽: {sessions_left}\n\n"
+        "Выберите сумму пополнения или введите свою:\n\n"
+        "• 350 ₽\n"
+        "• 1 000 ₽\n"
+        "• 2 000 ₽"
     )
 
 
@@ -96,20 +97,20 @@ def get_balance_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="290 ₽ → 350 ₽",
-                    callback_data="topup_290_350",
+                    text="Пополнить на 350 ₽",
+                    callback_data="topup_350",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="790 ₽ → 1 000 ₽",
-                    callback_data="topup_790_1000",
+                    text="Пополнить на 1 000 ₽",
+                    callback_data="topup_1000",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="1 490 ₽ → 2 000 ₽",
-                    callback_data="topup_1490_2000",
+                    text="Пополнить на 2 000 ₽",
+                    callback_data="topup_2000",
                 )
             ],
             [
@@ -153,7 +154,7 @@ def get_payment_error_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="Попробовать ещё раз",
-                    callback_data="open_balance",
+                    callback_data="balance",  # вызываем open_balance
                 )
             ],
             [
@@ -193,12 +194,12 @@ async def open_balance(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.in_(set(TOPUP_OPTIONS.keys())))
 async def choose_topup_package(callback: CallbackQuery) -> None:
     """
-    Пользователь выбрал пакет:
-    290 → 350, 790 → 1 000 или 1 490 → 2 000.
+    Пользователь выбрал пакет пополнения (350, 1000 или 2000 ₽).
     Отправляем инвойс на оплату.
     """
     option_key = callback.data
-    pay_amount_rub, credit_amount_rub = TOPUP_OPTIONS[option_key]
+    pay_amount_rub = TOPUP_OPTIONS[option_key]
+    credit_amount_rub = pay_amount_rub  # пополняем 1 к 1
 
     prices = [
         LabeledPrice(
@@ -207,12 +208,13 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
         )
     ]
 
-    payload = f"balance_topup:{pay_amount_rub}:{credit_amount_rub}"
+    # payload вида: "balance_topup:350"
+    payload = f"balance_topup:{pay_amount_rub}"
 
     await callback.message.answer_invoice(
         title="Пополнение баланса",
         description=(
-            f"Пополнение баланса аккаунта.\n"
+            "Пополнение баланса аккаунта.\n"
             f"Вы платите {pay_amount_rub} ₽, "
             f"на баланс будет зачислено {credit_amount_rub} ₽."
         ),
@@ -255,15 +257,8 @@ async def topup_custom_amount(message: Message, state: FSMContext) -> None:
         await message.answer("Сумма должна быть от 100 до 10 000 ₽. Попробуй ещё раз.")
         return
 
-    bonus_percent = 0
-    if amount_rub >= 1490:
-        bonus_percent = 34
-    elif amount_rub >= 790:
-        bonus_percent = 26
-    elif amount_rub >= 290:
-        bonus_percent = 20
-
-    credit_amount_rub = amount_rub + amount_rub * bonus_percent // 100
+    # Без бонусов: сколько заплатил, столько и зачислим
+    credit_amount_rub = amount_rub
 
     prices = [
         LabeledPrice(
@@ -272,12 +267,13 @@ async def topup_custom_amount(message: Message, state: FSMContext) -> None:
         )
     ]
 
-    payload = f"balance_topup_custom:{amount_rub}:{credit_amount_rub}"
+    # payload вида: "balance_topup_custom:500"
+    payload = f"balance_topup_custom:{amount_rub}"
 
     await message.answer_invoice(
         title="Пополнение баланса",
         description=(
-            f"Пополнение баланса аккаунта.\n"
+            "Пополнение баланса аккаунта.\n"
             f"Вы платите {amount_rub} ₽, "
             f"на баланс будет зачислено {credit_amount_rub} ₽."
         ),
@@ -328,15 +324,12 @@ async def successful_payment_handler(message: Message) -> None:
     payment: SuccessfulPayment = message.successful_payment
     payload = payment.invoice_payload
 
-    credited_amount_rub = payment.total_amount // 100
+    # Обрабатываем только пополнение баланса
+    if not payload.startswith("balance_topup"):
+        return
 
-    try:
-        # payload вида "balance_topup:290:350"
-        # или "balance_topup_custom:500:630"
-        _, paid_str, credited_str = payload.split(":")
-        credited_amount_rub = int(credited_str)
-    except Exception:
-        pass
+    # Сколько реально заплатили (в рублях)
+    credited_amount_rub = payment.total_amount // 100
 
     telegram_id = message.from_user.id
     new_balance = await add_to_balance_rub(telegram_id, credited_amount_rub)
@@ -344,7 +337,7 @@ async def successful_payment_handler(message: Message) -> None:
     text = (
         "Оплата прошла успешно!\n"
         f"На баланс зачислено {credited_amount_rub} ₽.\n\n"
-        "Теперь можно создавать фотосессии без ограничений ✨\n\n"
+        "Теперь можно создавать фотосессии ✨\n\n"
         f"Текущий баланс: {new_balance} ₽"
     )
 
