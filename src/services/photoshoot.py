@@ -149,8 +149,7 @@ async def generate_photoshoot_image(
             async with session.post(
                 COMET_ENDPOINT,
                 json=payload,
-                headers=headers,
-                timeout=120,
+                headers=headers
             ) as resp:
                 resp_text = await resp.text()
 
