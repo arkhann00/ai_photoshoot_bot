@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import os
 import ssl
@@ -18,10 +17,9 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Gemini API (native image generation / editing)
-GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-GEMINI_MODEL_NAME = "gemini-2.5-flash-image"
-GEMINI_ENDPOINT = f"{GEMINI_BASE_URL}/models/{GEMINI_MODEL_NAME}:generateContent"
+COMET_BASE_URL = "https://api.cometapi.com"
+COMET_MODEL_NAME = "gemini-3-pro-image"
+COMET_ENDPOINT = f"{COMET_BASE_URL}/v1beta/models/{COMET_MODEL_NAME}:generateContent"
 
 
 async def _download_telegram_photo(bot: Bot, file_id: str) -> bytes:
@@ -39,8 +37,7 @@ async def _download_telegram_photo(bot: Bot, file_id: str) -> bytes:
 
 def _build_prompt(style_title: str, style_prompt: Optional[str]) -> str:
     """
-    Формируем итоговый текст промпта для Gemini.
-
+    Формируем итоговый текст промпта для CometAI.
     Если есть кастомный prompt для стиля — используем его,
     иначе собираем базовый вариант по названию стиля.
     """
@@ -62,20 +59,20 @@ async def generate_photoshoot_image(
     bot: Bot,
 ) -> FSInputFile:
     """
-    Основная функция генерации фотосессии через Gemini (gemini-2.5-flash-image).
+    Основная функция генерации фотосессии через CometAI.
 
     Поддерживает 1, 2 или 3 входных фото из Telegram.
 
     1. Скачиваем 1–3 фото из Telegram.
     2. Кодируем каждое в Base64.
-    3. Отправляем один запрос в Gemini с несколькими inline_data.
+    3. Отправляем один запрос в CometAI (gemini-3-pro-image) с несколькими inline_data.
     4. Достаём Base64-картинку из ответа.
     5. Сохраняем изображение во временный файл и возвращаем FSInputFile.
     """
 
     api_key = settings.COMET_API_KEY
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY не задан в конфиге (settings.GEMINI_API_KEY).")
+        raise RuntimeError("COMET_API_KEY не задан в конфиге (settings.COMET_API_KEY).")
 
     # Приводим параметр к списку file_id
     if isinstance(user_photo_file_ids, str):
@@ -95,11 +92,7 @@ async def generate_photoshoot_image(
         try:
             original_photo_bytes = await _download_telegram_photo(bot, file_id)
         except Exception as e:
-            logger.exception(
-                "Ошибка при скачивании фото из Telegram (file_id=%s): %s",
-                file_id,
-                e,
-            )
+            logger.exception("Ошибка при скачивании фото из Telegram (file_id=%s): %s", file_id, e)
             raise RuntimeError("Не удалось скачать одно из фото из Telegram") from e
         photo_bytes_list.append(original_photo_bytes)
 
@@ -110,7 +103,7 @@ async def generate_photoshoot_image(
 
     prompt_text = _build_prompt(style_title=style_title, style_prompt=style_prompt)
 
-    # Формируем parts: сначала текст, затем 1–3 inline_data с фото
+    # Формируем parts: сначала текст, затем 1–3 inline_data
     parts: list[dict] = [
         {"text": prompt_text},
     ]
@@ -125,22 +118,23 @@ async def generate_photoshoot_image(
             }
         )
 
-    payload: dict = {
+    payload = {
         "contents": [
             {
-                # role не обязателен, но допустим
                 "role": "user",
                 "parts": parts,
             }
-        ]
-        # generationConfig можно не указывать — модель сама вернёт IMAGE,
-        # при этом мы всё равно ищем inlineData в ответе.
+        ],
+        "generationConfig": {
+            "responseModalities": [
+                "IMAGE",
+            ]
+        },
     }
 
     headers = {
-        # Официальный формат авторизации для Gemini API
-        # https://ai.google.dev/gemini-api/docs/image-generation#rest
-        "x-goog-api-key": api_key,
+        # В доке CometAI: Authorization: sk-xxxx
+        "Authorization": api_key,
         "Content-Type": "application/json",
         "Accept": "*/*",
     }
@@ -149,57 +143,52 @@ async def generate_photoshoot_image(
     ssl_context = ssl.create_default_context(cafile=certifi.where())
     connector = aiohttp.TCPConnector(ssl=ssl_context)
 
-    # 3. Запрос к Gemini
+    # 3. Запрос к CometAI
     try:
         async with aiohttp.ClientSession(connector=connector) as session:
             async with session.post(
-                GEMINI_ENDPOINT,
+                COMET_ENDPOINT,
                 json=payload,
                 headers=headers,
                 timeout=120,
             ) as resp:
                 resp_text = await resp.text()
 
-                # Пытаемся распарсить JSON из текста ответа
-                data: Optional[dict] = None
+                # Пробуем распарсить JSON (может не получиться, оставим как есть)
+                data = None
                 try:
-                    data = json.loads(resp_text)
+                    data = await resp.json()
                 except Exception:
                     data = None
 
                 if resp.status != 200:
-                    error_status = None
+                    # Пытаемся вытащить код/сообщение ошибки
+                    error_code = None
                     error_message = None
-
                     if isinstance(data, dict):
                         err = data.get("error") or {}
-                        error_status = err.get("status")
+                        error_code = err.get("code")
                         error_message = err.get("message")
 
                     logger.error(
-                        "Gemini API вернул ошибку: status=%s, body=%s",
+                        "CometAI вернул ошибку: status=%s, body=%s",
                         resp.status,
                         resp_text,
                     )
 
-                    # Пробуем выделить понятный текст, когда закончился лимит/квота
-                    if resp.status in (403, 429) and error_status in (
-                        "RESOURCE_EXHAUSTED",
-                        "PERMISSION_DENIED",
-                    ):
+                    # Отдельный кейс: закончилась квота
+                    if resp.status == 403 and error_code == "insufficient_user_quota":
                         raise RuntimeError(
-                            "На стороне сервиса генерации закончился доступный лимит. "
+                            "На стороне сервиса генерации закончился оплаченный лимит. "
                             "Скоро всё починим — попробуй зайти позже 🙏"
                         )
 
-                    # Остальные ошибки — общий текст
                     raise RuntimeError(
                         "Сервис генерации фото сейчас недоступен. Попробуй позже."
-                        + (f" Детали: {error_message}" if error_message else "")
                     )
 
     except Exception as e:
-        logger.exception("Ошибка при запросе к Gemini API: %s", e)
+        logger.exception("Ошибка при запросе к CometAI: %s", e)
         raise RuntimeError(str(e)) from e
 
     # 4. Разбираем ответ и достаём картинку
@@ -207,26 +196,14 @@ async def generate_photoshoot_image(
     mime_type: str = "image/jpeg"
 
     try:
-        if not isinstance(data, dict):
-            raise RuntimeError("Некорректный формат ответа от Gemini API")
-
         candidates = data.get("candidates") or []
         if not candidates:
             raise RuntimeError("Сервис не вернул кандидатов изображения")
 
-        # Структура по докам:
-        # candidates[0].content.parts[].inlineData / inline_data
-        parts_response = (
-            candidates[0].get("content", {}).get("parts", [])
-            or candidates[0].get("content", {}).get("Parts", [])
-        )
+        parts_response = candidates[0].get("content", {}).get("parts", [])
 
         for part in parts_response:
-            inline_data = (
-                part.get("inlineData")
-                or part.get("inline_data")
-                or part.get("inline_data".upper())
-            )
+            inline_data = part.get("inlineData") or part.get("inline_data")
             if not inline_data:
                 continue
 
@@ -240,9 +217,9 @@ async def generate_photoshoot_image(
             break
 
         if not image_bytes:
-            raise RuntimeError("Не удалось получить изображение из ответа Gemini API")
+            raise RuntimeError("Не удалось получить изображение из ответа CometAI")
     except Exception as e:
-        logger.exception("Ошибка при разборе ответа Gemini API: %s", e)
+        logger.exception("Ошибка при разборе ответа CometAI: %s", e)
         raise RuntimeError("Ошибка при обработке ответа сервиса генерации") from e
 
     # 5. Сохраняем картинку во временный файл
