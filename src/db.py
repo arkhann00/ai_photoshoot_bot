@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 from uuid import uuid4
 
+from fastapi import HTTPException
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -17,7 +18,7 @@ from sqlalchemy import (
     select,
     case
 )
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -143,7 +144,8 @@ class StyleCategory(Base):
     __tablename__ = "style_categories"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    title: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    # Больше НЕ unique
+    title: Mapped[str] = mapped_column(String(128), index=True)
     description: Mapped[str] = mapped_column(String(512))
     image_filename: Mapped[str] = mapped_column(String(128))
     gender: Mapped[StyleGender] = mapped_column(Enum(StyleGender))
@@ -155,13 +157,12 @@ class StyleCategory(Base):
         server_default=func.now(),
     )
 
-
-
 class StylePrompt(Base):
     __tablename__ = "style_prompts"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    title: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    # Больше НЕ unique
+    title: Mapped[str] = mapped_column(String(128), index=True)
     description: Mapped[str] = mapped_column(String(512))
     prompt: Mapped[str] = mapped_column(String(2048))
     image_filename: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
@@ -253,9 +254,146 @@ async def run_manual_migrations() -> None:
             else:
                 raise
 
-        # сюда при желании можно вернуть твои старые миграции для users/style_categories и т.п.
+        # --- миграция: убрать UNIQUE(title) для style_categories и style_prompts в SQLite ---
+        # На других СУБД (Postgres и т.п.) это место можно доработать отдельно при необходимости.
+        dialect_name = conn.dialect.name
 
+        if dialect_name == "sqlite":
+            # 1) style_categories
+            try:
+                # создаём временную таблицу без UNIQUE(title)
+                await conn.execute(
+                    text(
+                        """
+                        CREATE TABLE style_categories_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            title VARCHAR(128) NOT NULL,
+                            description VARCHAR(512) NOT NULL,
+                            image_filename VARCHAR(128) NOT NULL,
+                            gender VARCHAR(16) NOT NULL,
+                            sort_order INTEGER NOT NULL DEFAULT 0,
+                            is_active BOOLEAN NOT NULL DEFAULT 1,
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                )
 
+                # копируем данные из старой таблицы, если она есть
+                await conn.execute(
+                    text(
+                        """
+                        INSERT INTO style_categories_new (
+                            id,
+                            title,
+                            description,
+                            image_filename,
+                            gender,
+                            sort_order,
+                            is_active,
+                            created_at
+                        )
+                        SELECT
+                            id,
+                            title,
+                            description,
+                            image_filename,
+                            gender,
+                            sort_order,
+                            is_active,
+                            created_at
+                        FROM style_categories
+                        """
+                    )
+                )
+
+                # удаляем старую таблицу и переименовываем новую
+                await conn.execute(text("DROP TABLE style_categories"))
+                await conn.execute(
+                    text(
+                        "ALTER TABLE style_categories_new RENAME TO style_categories"
+                    )
+                )
+            except OperationalError as e:
+                msg = str(e)
+                # если таблицы нет либо миграция уже делалась, просто пропускаем
+                if (
+                    "no such table: style_categories" in msg
+                    or "table style_categories_new already exists" in msg
+                ):
+                    pass
+                else:
+                    raise
+
+            # 2) style_prompts
+            try:
+                # создаём временную таблицу без UNIQUE(title)
+                await conn.execute(
+                    text(
+                        """
+                        CREATE TABLE style_prompts_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            title VARCHAR(128) NOT NULL,
+                            description VARCHAR(512) NOT NULL,
+                            prompt VARCHAR(2048) NOT NULL,
+                            image_filename VARCHAR(128),
+                            category_id INTEGER NOT NULL,
+                            gender VARCHAR(16) NOT NULL,
+                            is_active BOOLEAN NOT NULL DEFAULT 1,
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                )
+
+                # копируем данные из старой таблицы
+                await conn.execute(
+                    text(
+                        """
+                        INSERT INTO style_prompts_new (
+                            id,
+                            title,
+                            description,
+                            prompt,
+                            image_filename,
+                            category_id,
+                            gender,
+                            is_active,
+                            created_at
+                        )
+                        SELECT
+                            id,
+                            title,
+                            description,
+                            prompt,
+                            image_filename,
+                            category_id,
+                            gender,
+                            is_active,
+                            created_at
+                        FROM style_prompts
+                        """
+                    )
+                )
+
+                # удаляем старую таблицу и переименовываем новую
+                await conn.execute(text("DROP TABLE style_prompts"))
+                await conn.execute(
+                    text(
+                        "ALTER TABLE style_prompts_new RENAME TO style_prompts"
+                    )
+                )
+            except OperationalError as e:
+                msg = str(e)
+                if (
+                    "no such table: style_prompts" in msg
+                    or "table style_prompts_new already exists" in msg
+                ):
+                    pass
+                else:
+                    raise
+
+        # сюда при желании можно вернуть твои старые миграции для других таблиц
 
 async def init_db() -> None:
     """
@@ -894,6 +1032,7 @@ async def create_style_prompt(
         await session.commit()
         await session.refresh(style)
         return style
+
 
 
 async def get_styles_for_category(category_id: int) -> list[StylePrompt]:

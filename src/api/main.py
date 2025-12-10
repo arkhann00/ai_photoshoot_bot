@@ -73,7 +73,7 @@ app = FastAPI(
 # CORS — пока максимально широкий, потом можно сузить под домен мини-аппы
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://62.113.42.113:5173"],
+    allow_origins=["http://62.113.42.113:5173", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -140,6 +140,7 @@ class StyleResponse(BaseModel):
     id: int
     title: str
     description: str
+    prompt: str
     image_filename: str
     image_url: str
     is_active: bool
@@ -689,6 +690,7 @@ async def api_styles(
                 id=s.id,
                 title=s.title,
                 description=s.description,
+                prompt=s.prompt,
                 image_filename=s.image_filename,
                 image_url=image_url,
                 is_active=s.is_active,
@@ -697,7 +699,6 @@ async def api_styles(
             )
         )
     return result
-
 
 # -------------------------------------------------------------------
 # Категории и стили — админка
@@ -791,32 +792,63 @@ async def admin_create_style_category_endpoint(
         gender=category.gender.value,
     )
 
-
-@app.delete("/api/admin/style-categories/{category_id}")
-async def admin_delete_style_category(
+@app.put("/api/admin/style-categories/{category_id}", response_model=StyleCategoryResponse)
+async def admin_update_style_category_endpoint(
     category_id: int,
+    title: str | None = Form(None),
+    description: str | None = Form(None),
+    gender: str | None = Form(None),  # "male" / "female" или None
+    image: UploadFile | None = File(None),
+    file: UploadFile | None = File(None),
     user: CurrentUser = Depends(get_current_user),
-):
+) -> StyleCategoryResponse:
+    """
+    Обновление категории стилей в админке.
+
+    Любое поле можно не передавать — тогда оно не изменится.
+    Картинку можно прислать либо в "image", либо в "file".
+    """
     ensure_admin(user)
 
     async with async_session() as session:
-        # удаляем стили этой категории
-        await session.execute(
-            sa_delete(StylePrompt).where(StylePrompt.category_id == category_id)
-        )
-
-        result = await session.execute(
-            select(StyleCategory).where(StyleCategory.id == category_id)
-        )
-        category = result.scalar_one_or_none()
-        if category is None:
+        db_category = await session.get(StyleCategory, category_id)
+        if db_category is None:
             raise HTTPException(status_code=404, detail="Category not found")
 
-        await session.delete(category)
+        if title is not None:
+            db_category.title = title
+
+        if description is not None:
+            db_category.description = description
+
+        if gender is not None:
+            try:
+                gender_enum = StyleGender(gender)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid gender")
+            db_category.gender = gender_enum
+
+        upload = image or file
+        if upload is not None:
+            image_filename = await admin_styles.save_uploaded_image(
+                upload,
+                prefix="category",
+            )
+            db_category.image_filename = image_filename
+
         await session.commit()
+        await session.refresh(db_category)
 
-    return JSONResponse({"status": "ok"})
-
+    image_url = f"/static/img/{db_category.image_filename}"
+    return StyleCategoryResponse(
+        id=db_category.id,
+        title=db_category.title,
+        description=db_category.description,
+        image_filename=db_category.image_filename,
+        image_url=image_url,
+        is_active=db_category.is_active,
+        gender=db_category.gender.value,
+    )
 
 @app.get("/api/admin/styles", response_model=list[StyleResponse])
 async def admin_list_styles(
@@ -834,6 +866,7 @@ async def admin_list_styles(
                 id=s.id,
                 title=s.title,
                 description=s.description,
+                prompt=s.prompt,
                 image_filename=s.image_filename,
                 image_url=image_url,
                 is_active=s.is_active,
@@ -842,7 +875,6 @@ async def admin_list_styles(
             )
         )
     return result
-
 
 @app.post("/api/admin/styles", response_model=StyleResponse)
 async def admin_create_style_endpoint(
@@ -886,6 +918,7 @@ async def admin_create_style_endpoint(
         id=style.id,
         title=style.title,
         description=style.description,
+        prompt=style.prompt,
         image_filename=style.image_filename,
         image_url=image_url,
         is_active=style.is_active,
@@ -1122,3 +1155,72 @@ async def admin_set_admin_flag_endpoint(
         is_admin=getattr(updated, "is_admin", False),
         created_at=created_at_str,
     )
+@app.put(
+    "/api/admin/styles/{style_id}",
+    response_model=StyleResponse,
+)
+async def admin_update_style_endpoint(
+    style_id: int,
+    title: str = Form(...),
+    description: str = Form(""),
+    prompt: str = Form(""),
+    category_id: int = Form(...),
+    image: UploadFile | None = File(None),
+    file: UploadFile | None = File(None),
+    user: CurrentUser = Depends(get_current_user),
+) -> StyleResponse:
+    """
+    Обновление стиля в админке:
+    - можно поменять title / description / prompt / category_id
+    - можно сменить картинку (image/file), если передана
+    """
+    ensure_admin(user)
+
+    async with async_session() as session:
+        # 1. Находим сам стиль
+        db_style = await session.get(StylePrompt, style_id)
+        if db_style is None:
+            raise HTTPException(status_code=404, detail="Style not found")
+
+        # 2. Проверяем, что новая категория существует
+        result = await session.execute(
+            select(StyleCategory).where(StyleCategory.id == category_id)
+        )
+        category = result.scalar_one_or_none()
+        if category is None:
+            raise HTTPException(status_code=400, detail="Category not found")
+
+        # 3. Обновляем поля
+        db_style.title = title
+        db_style.description = description
+        db_style.prompt = prompt
+        db_style.category_id = category.id
+        db_style.gender = category.gender  # пол наследуем от категории
+
+        # 4. Если прислали новую картинку — сохраняем и обновляем image_filename
+        upload = image or file
+        if upload is not None:
+            image_filename = await admin_styles.save_uploaded_image(
+                upload,
+                prefix="style",
+            )
+            db_style.image_filename = image_filename
+
+        await session.commit()
+        await session.refresh(db_style)
+
+        image_url = f"/static/img/{db_style.image_filename}"
+
+        return StyleResponse(
+            id=db_style.id,
+            title=db_style.title,
+            description=db_style.description,
+            prompt=db_style.prompt,             # ← вот этого поля не хватало
+            image_filename=db_style.image_filename,
+            image_url=image_url,
+            is_active=db_style.is_active,
+            category_id=db_style.category_id,
+            gender=db_style.gender.value,
+        )
+
+
