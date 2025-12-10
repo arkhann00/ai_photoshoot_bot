@@ -27,8 +27,8 @@ from src.db import (
 router = Router()
 
 # Токен платёжного провайдера (Юкасса через BotFather)
-# PAYMENT_PROVIDER_TOKEN = "390540012:LIVE:84036"
-PAYMENT_PROVIDER_TOKEN = "381764678:TEST:154522"
+# Для боевого режима подставь сюда LIVE-токен
+PAYMENT_PROVIDER_TOKEN = "390540012:LIVE:84036"
 
 # Цена одной фотосессии в рублях
 PHOTOSESSION_PRICE_RUB = 50
@@ -205,7 +205,7 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
     prices = [
         LabeledPrice(
             label=f"Пополнение баланса на {credit_amount_rub} ₽",
-            amount=pay_amount_rub * 100,
+            amount=pay_amount_rub * 100,  # amount в копейках
         )
     ]
 
@@ -223,10 +223,13 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
         currency="RUB",
         prices=prices,
         payload=payload,
+        start_parameter="balance_topup",  # как в примерах sendInvoice
         need_name=False,
         need_phone_number=False,
         need_email=False,
+        need_shipping_address=False,
         is_flexible=False,
+        max_tip_amount=0,
     )
 
     await callback.answer()
@@ -282,10 +285,13 @@ async def topup_custom_amount(message: Message, state: FSMContext) -> None:
         currency="RUB",
         prices=prices,
         payload=payload,
+        start_parameter="balance_topup_custom",
         need_name=False,
         need_phone_number=False,
         need_email=False,
+        need_shipping_address=False,
         is_flexible=False,
+        max_tip_amount=0,
     )
 
     await state.clear()
@@ -300,7 +306,16 @@ async def process_pre_checkout(
     pre_checkout_query: PreCheckoutQuery,
     bot: Bot,
 ) -> None:
+    """
+    Обязательный шаг для платежей Telegram:
+    на каждый PreCheckoutQuery нужно ответить answerPreCheckoutQuery.
+    """
     payload = pre_checkout_query.invoice_payload
+
+    print("=== PRE CHECKOUT ===")
+    print("payload:", payload)
+    print("total_amount:", pre_checkout_query.total_amount)
+    print("currency:", pre_checkout_query.currency)
 
     if not payload.startswith("balance_topup"):
         await bot.answer_pre_checkout_query(
@@ -320,10 +335,17 @@ async def process_pre_checkout(
 # Успешный платёж
 # =====================================================================
 
-@router.message(F.content_type == ContentType.SUCCESSFUL_PAYMENT)
+@router.message(F.successful_payment)
 async def successful_payment_handler(message: Message) -> None:
     payment: SuccessfulPayment = message.successful_payment
     payload = payment.invoice_payload
+
+    print("=== SUCCESSFUL PAYMENT ===")
+    print("payload:", payload)
+    print("total_amount:", payment.total_amount)
+    print("currency:", payment.currency)
+    print("telegram_charge_id:", payment.telegram_payment_charge_id)
+    print("provider_charge_id:", payment.provider_payment_charge_id)
 
     # Обрабатываем только пополнение баланса
     if not payload.startswith("balance_topup"):
@@ -339,7 +361,7 @@ async def successful_payment_handler(message: Message) -> None:
         "Оплата прошла успешно!\n"
         f"На баланс зачислено {credited_amount_rub} ₽.\n\n"
         "Теперь можно создавать фотосессии ✨\n\n"
-        f"Текущий баланс: {new_balance} ₽"
+        f"Тekущий баланс: {new_balance} ₽"
     )
 
     await message.answer(
