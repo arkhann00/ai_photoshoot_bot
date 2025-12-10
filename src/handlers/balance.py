@@ -1,6 +1,7 @@
 # src/handlers/balance.py
 
 import asyncio
+import json
 from typing import Dict
 
 from aiogram import Router, F, Bot
@@ -27,7 +28,7 @@ from src.db import (
 router = Router()
 
 # Токен платёжного провайдера (Юкасса через BotFather)
-# Для боевого режима подставь сюда LIVE-токен
+# Для теста можно подставить TEST-токен, для прода — LIVE-токен
 PAYMENT_PROVIDER_TOKEN = "390540012:LIVE:84036"
 
 # Цена одной фотосессии в рублях
@@ -39,6 +40,18 @@ TOPUP_OPTIONS: Dict[str, int] = {
     "topup_1000": 1000,
     "topup_2000": 2000,
 }
+
+# Налоговая система для чеков (уточни в ЛК ЮKassa при необходимости)
+# 1 — ОСН, 2 — УСН доход, 3 — УСН доход-расход, 4 — ЕНВД, 5 — ЕСХН, 6 — ПСН
+TAX_SYSTEM_CODE = 1
+
+# Ставка НДС для чека (уточни под себя)
+# 1 — НДС 0%, 2 — НДС 10%, 3 — НДС 20%, 4 — НДС 10/110, 5 — НДС 20/120, 6 — без НДС
+VAT_CODE = 1
+
+# Предмет и способ оплаты в чеке
+PAYMENT_MODE = "full_payment"      # полный расчёт
+PAYMENT_SUBJECT = "service"        # услуга (цифровой сервис)
 
 
 class TopupStates(StatesGroup):
@@ -168,6 +181,36 @@ def get_payment_error_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def build_provider_data(description: str, amount_rub: int) -> str:
+    """
+    Сформировать provider_data с чеком для ЮKassa.
+
+    ВАЖНО:
+    - amount в инвойсе в копейках,
+    - amount.value в чеке в рублях (строкой).
+    """
+    receipt = {
+        "receipt": {
+            "items": [
+                {
+                    "description": description[:128],  # ограничение Telegram/YooKassa
+                    "quantity": 1,
+                    "amount": {
+                        "value": f"{amount_rub:.2f}",  # рубли, строкой
+                        "currency": "RUB",
+                    },
+                    "vat_code": VAT_CODE,
+                    "payment_mode": PAYMENT_MODE,
+                    "payment_subject": PAYMENT_SUBJECT,
+                }
+            ],
+            "tax_system_code": TAX_SYSTEM_CODE,
+        }
+    }
+    # Telegram ждёт provider_data как JSON-строку
+    return json.dumps(receipt, ensure_ascii=False)
+
+
 # =====================================================================
 # Вход в раздел «Баланс»
 # =====================================================================
@@ -209,8 +252,12 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
         )
     ]
 
-    # payload вида: "balance_topup:350"
     payload = f"balance_topup:{pay_amount_rub}"
+
+    provider_data = build_provider_data(
+        description=f"Пополнение баланса на {credit_amount_rub} ₽",
+        amount_rub=pay_amount_rub,
+    )
 
     await callback.message.answer_invoice(
         title="Пополнение баланса",
@@ -223,13 +270,16 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
         currency="RUB",
         prices=prices,
         payload=payload,
-        start_parameter="balance_topup",  # как в примерах sendInvoice
-        need_name=False,
+        start_parameter="balance_topup",
+        # важные флаги для чека через ЮKassa (способ 2 из письма поддержки)
+        need_email=True,
+        send_email_to_provider=True,
         need_phone_number=False,
-        need_email=False,
+        send_phone_number_to_provider=False,
         need_shipping_address=False,
         is_flexible=False,
         max_tip_amount=0,
+        provider_data=provider_data,
     )
 
     await callback.answer()
@@ -261,7 +311,6 @@ async def topup_custom_amount(message: Message, state: FSMContext) -> None:
         await message.answer("Сумма должна быть от 100 до 10 000 ₽. Попробуй ещё раз.")
         return
 
-    # Без бонусов: сколько заплатил, столько и зачислим
     credit_amount_rub = amount_rub
 
     prices = [
@@ -271,8 +320,12 @@ async def topup_custom_amount(message: Message, state: FSMContext) -> None:
         )
     ]
 
-    # payload вида: "balance_topup_custom:500"
     payload = f"balance_topup_custom:{amount_rub}"
+
+    provider_data = build_provider_data(
+        description=f"Пополнение баланса на {credit_amount_rub} ₽",
+        amount_rub=amount_rub,
+    )
 
     await message.answer_invoice(
         title="Пополнение баланса",
@@ -286,12 +339,14 @@ async def topup_custom_amount(message: Message, state: FSMContext) -> None:
         prices=prices,
         payload=payload,
         start_parameter="balance_topup_custom",
-        need_name=False,
+        need_email=True,
+        send_email_to_provider=True,
         need_phone_number=False,
-        need_email=False,
+        send_phone_number_to_provider=False,
         need_shipping_address=False,
         is_flexible=False,
         max_tip_amount=0,
+        provider_data=provider_data,
     )
 
     await state.clear()
@@ -351,7 +406,6 @@ async def successful_payment_handler(message: Message) -> None:
     if not payload.startswith("balance_topup"):
         return
 
-    # Сколько реально заплатили (в рублях)
     credited_amount_rub = payment.total_amount // 100
 
     telegram_id = message.from_user.id
@@ -361,7 +415,7 @@ async def successful_payment_handler(message: Message) -> None:
         "Оплата прошла успешно!\n"
         f"На баланс зачислено {credited_amount_rub} ₽.\n\n"
         "Теперь можно создавать фотосессии ✨\n\n"
-        f"Тekущий баланс: {new_balance} ₽"
+        f"Текущий баланс: {new_balance} ₽"
     )
 
     await message.answer(
