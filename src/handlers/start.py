@@ -92,3 +92,9 @@ async def referral_link_button(callback: CallbackQuery):
         "ты будешь получать <b>5 ₽</b> на свой баланс.",
         reply_markup=back_to_main_menu_keyboard(),
     )
+
+
+@router.message(F.chat.type.in_({"group", "supergroup"}), F.text == "/chat_id")
+async def show_group_id(message: Message):
+    chat_id = message.chat.id
+    await message.answer(f"ID этого чата: {chat_id}")

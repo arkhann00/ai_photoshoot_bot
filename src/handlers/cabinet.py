@@ -56,7 +56,7 @@ async def open_personal_cabinet(callback: CallbackQuery):
             caption=caption,
             reply_markup=kb,
         )
-    await callback.message.answer(text="Назад?", reply_markup=back_to_main_menu_keyboard())
+    await callback.message.answer(text="Вернуться в главное меню?", reply_markup=back_to_main_menu_keyboard())
 
 
 @router.callback_query(F.data.startswith("avatar_delete:"))
