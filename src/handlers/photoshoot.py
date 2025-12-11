@@ -1,4 +1,4 @@
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
@@ -23,7 +23,8 @@ from src.keyboards import (
     back_to_main_menu_keyboard,
     get_gender_keyboard,
     get_categories_keyboard,
-    get_categories_carousel_keyboard, get_error_generating_keyboard,
+    get_categories_carousel_keyboard,
+    get_error_generating_keyboard,
 )
 from src.services.photoshoot import generate_photoshoot_image, logger
 from src.services.admins import is_admin
@@ -41,10 +42,30 @@ from src.db import (
     get_styles_by_category_and_gender,
     StyleGender,
     get_all_style_categories,
-    get_style_categories_for_gender, get_user_by_telegram_id, change_user_balance,
+    get_style_categories_for_gender,
+    get_user_by_telegram_id,
+    change_user_balance,
 )
 
 router = Router()
+
+ADM_GROUP_ID = -5075627878
+
+
+async def send_admin_log(bot: Bot, text: str) -> None:
+    """
+    Отправка красиво оформленного лога в админский чат.
+    Не роняет бота, если чат недоступен.
+    """
+    try:
+        await bot.send_message(
+            chat_id=ADM_GROUP_ID,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        logger.error("Не удалось отправить лог в админский чат: %s", e)
 
 
 async def _send_photo_with_fallback(
@@ -69,6 +90,15 @@ async def _send_photo_with_fallback(
         await callback.message.answer(
             "Не удалось найти файл картинки для этого стиля. "
             "Попробуй выбрать другой стиль или обратись к администратору."
+        )
+
+        await send_admin_log(
+            callback.message.bot,
+            (
+                "⚠️ <b>Ошибка отправки превью стиля</b>\n"
+                f"Пользователь: <code>{callback.from_user.id}</code>\n"
+                f"Файл не найден: <code>{image_path}</code>"
+            ),
         )
         return
 
@@ -111,6 +141,16 @@ async def _send_photo_with_fallback(
                 "Не удалось отправить картинку 😔\n"
                 "Похоже, файл повреждён или Telegram не смог его обработать.\n"
                 "Попробуй выбрать другой стиль или категорию."
+            )
+
+            await send_admin_log(
+                callback.message.bot,
+                (
+                    "🔴 <b>Ошибка отправки превью стиля</b>\n"
+                    f"Пользователь: <code>{callback.from_user.id}</code>\n"
+                    f"Файл: <code>{image_path}</code>\n"
+                    f"Ошибка Telegram: <code>{e2}</code>"
+                ),
             )
 
 
@@ -255,8 +295,6 @@ async def back_to_gender(callback: CallbackQuery, state: FSMContext):
 
     text = "Кого будем фоткать? 😊\n\nВыбери пол:"
 
-
-
     try:
         await callback.message.delete()
         # Если текущее сообщение текстовое — попробуем отредактировать его
@@ -277,7 +315,6 @@ async def back_to_gender(callback: CallbackQuery, state: FSMContext):
             raise
 
     await callback.answer()
-
 
 
 @router.callback_query(F.data == "cat_select")
@@ -330,7 +367,6 @@ async def cat_select(callback: CallbackQuery, state: FSMContext):
 
     keyboard = get_styles_keyboard()
     caption = f"<b>{style.title}</b>\n\n<i>{style.description}</i>"
-
 
     await _send_photo_with_fallback(
         callback=callback,
@@ -496,6 +532,7 @@ async def choose_category(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer()
 
+
 @router.callback_query(F.data == "back_to_categories")
 async def back_to_categories(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
@@ -524,7 +561,6 @@ async def back_to_categories(callback: CallbackQuery, state: FSMContext):
         reply_markup=get_categories_keyboard(categories),
     )
     await safe_callback_answer(callback)
-
 
 
 @router.callback_query(F.data == "next")
@@ -691,7 +727,6 @@ def get_insufficient_balance_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-
 @router.message(MainStates.making_photoshoot_process, F.photo)
 async def handle_selfie(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -737,6 +772,17 @@ async def handle_selfie(message: Message, state: FSMContext):
                 text,
                 reply_markup=get_insufficient_balance_keyboard(),
             )
+
+            username = message.from_user.username or "—"
+            await send_admin_log(
+                message.bot,
+                (
+                    "⚠️ <b>Попытка генерации без средств</b>\n"
+                    f"Пользователь: <code>{message.from_user.id}</code> @{username}\n"
+                    f"Текущий стиль: {style_title}\n"
+                    f"Цена фотосессии: {PHOTOSHOOT_PRICE} ₽"
+                ),
+            )
             return
 
     # 3. Баланс ок (или пользователь админ), запускаем генерацию
@@ -759,7 +805,7 @@ async def handle_selfie(message: Message, state: FSMContext):
         generated_photo = await generate_photoshoot_image(
             style_title=style_title,
             style_prompt=style_prompt,
-            user_photo_file_ids=user_photo_file_id,  # <-- правильное имя аргумента
+            user_photo_file_ids=user_photo_file_id,
             bot=message.bot,
         )
 
@@ -773,19 +819,48 @@ async def handle_selfie(message: Message, state: FSMContext):
             provider="comet_gemini_2_5_flash",
         )
 
+        username = message.from_user.username or "—"
+        await send_admin_log(
+            message.bot,
+            (
+                "🟢 <b>Успешная генерация фотосессии</b>\n"
+                f"Пользователь: <code>{message.from_user.id}</code> @{username}\n"
+                f"Стиль: {style_title}\n"
+                f"Списано: {log_cost_rub} ₽\n"
+                f"Админ: {'да' if user_is_admin else 'нет'}"
+            ),
+        )
+
+        # ==== Реферальный бонус 5 ₽ рефереру ====
         try:
             user = await get_user_by_telegram_id(message.from_user.id)
             referrer_id = getattr(user, "referrer_id", None)
-            # Не начисляем, если реферера нет, совпадает с самим пользователем
-            # или пользователь — админ (чтобы не фармить тестами)
             if (
-                    referrer_id is not None
-                    and referrer_id != message.from_user.id
-                    and not user_is_admin
+                referrer_id is not None
+                and referrer_id != message.from_user.id
+                and not user_is_admin
             ):
                 await change_user_balance(referrer_id, 5)
+
+                await send_admin_log(
+                    message.bot,
+                    (
+                        "💰 <b>Реферальный бонус за фотосессию</b>\n"
+                        f"Реферер: <code>{referrer_id}</code>\n"
+                        f"Новый пользователь: <code>{message.from_user.id}</code> @{username}\n"
+                        "Начислено: 5 ₽ на баланс реферера"
+                    ),
+                )
         except Exception as ref_err:
             logger.error("Не удалось начислить реферальный бонус: %s", ref_err)
+            await send_admin_log(
+                message.bot,
+                (
+                    "🔴 <b>Ошибка начисления реферального бонуса</b>\n"
+                    f"Пользователь: <code>{message.from_user.id}</code>\n"
+                    f"Ошибка: <code>{ref_err}</code>"
+                ),
+            )
 
     except Exception as e:
         # Логируем неудачу
@@ -799,13 +874,25 @@ async def handle_selfie(message: Message, state: FSMContext):
             error_message=str(e),
         )
 
+        username = message.from_user.username or "—"
+        await send_admin_log(
+            message.bot,
+            (
+                "🔴 <b>Ошибка генерации фотосессии</b>\n"
+                f"Пользователь: <code>{message.from_user.id}</code> @{username}\n"
+                f"Стиль: {style_title}\n"
+                f"Стоимость: {log_cost_rub} ₽\n"
+                f"Ошибка: <code>{e}</code>"
+            ),
+        )
+
         await state.update_data(is_generating=False)
         await state.set_state(MainStates.making_photoshoot_failed)
         await message.answer(
             "Упс… Что-то пошло не так при генерации фото 😔\n"
             "Сервис обработки временно недоступен.\n"
             "Попробуй, пожалуйста, ещё раз чуть позже.",
-            reply_markup=get_error_generating_keyboard()
+            reply_markup=get_error_generating_keyboard(),
         )
         return
 
@@ -833,19 +920,20 @@ async def handle_selfie(message: Message, state: FSMContext):
         reply_markup=get_after_photoshoot_keyboard(),
     )
 
-from aiogram.exceptions import TelegramBadRequest
+
+from aiogram.exceptions import TelegramBadRequest as AiogramTelegramBadRequest
+
 
 async def safe_callback_answer(callback: CallbackQuery) -> None:
     try:
         await callback.answer()
-    except TelegramBadRequest as e:
+    except AiogramTelegramBadRequest as e:
         msg = str(e)
         # Игнорируем только "query is too old..."
         if "query is too old and response timeout expired" in msg or "query ID is invalid" in msg:
             logger.warning("Пропускаю устаревший callback: %s", msg)
         else:
             raise
-
 
 
 @router.message(MainStates.making_photoshoot_process)

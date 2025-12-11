@@ -27,6 +27,8 @@ from src.db import (
 
 router = Router()
 
+ADM_GROUP_ID = -5075627878
+
 # Токен платёжного провайдера (Юкасса через BotFather)
 # Для теста можно подставить TEST-токен, для прода — LIVE-токен
 PAYMENT_PROVIDER_TOKEN = "390540012:LIVE:84036"
@@ -41,8 +43,6 @@ TOPUP_OPTIONS: Dict[str, int] = {
     "topup_1000": 1000,
     "topup_2000": 2000,
 }
-
-
 
 # Налоговая система для чеков (уточни в ЛК ЮKassa при необходимости)
 # 1 — ОСН, 2 — УСН доход, 3 — УСН доход-расход, 4 — ЕНВД, 5 — ЕСХН, 6 — ПСН
@@ -59,6 +59,23 @@ PAYMENT_SUBJECT = "service"        # услуга (цифровой сервис
 
 class TopupStates(StatesGroup):
     waiting_for_custom_amount = State()
+
+
+async def send_admin_log(bot: Bot, text: str) -> None:
+    """
+    Отправка красиво оформленного лога в админский чат.
+    Не роняет бота, если чат недоступен.
+    """
+    try:
+        await bot.send_message(
+            chat_id=ADM_GROUP_ID,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        # Логирование не должно ломать основной поток
+        return
 
 
 # =====================================================================
@@ -225,13 +242,27 @@ async def open_balance(callback: CallbackQuery) -> None:
     Показываем текущий баланс из БД и варианты пополнения.
     """
     telegram_id = callback.from_user.id
+    username = callback.from_user.username or "—"
+    bot = callback.bot
+
     text = await format_balance_message(telegram_id)
+    current_balance = await get_balance_rub(telegram_id)
 
     await callback.message.edit_text(
         text,
         reply_markup=get_balance_keyboard(),
     )
     await callback.answer()
+
+    # Лог в админский чат
+    await send_admin_log(
+        bot,
+        (
+            "💼 <b>Открыт раздел «Баланс»</b>\n"
+            f"Пользователь: <code>{telegram_id}</code> @{username}\n"
+            f"Текущий баланс: <b>{current_balance} ₽</b>"
+        ),
+    )
 
 
 # =====================================================================
@@ -241,7 +272,7 @@ async def open_balance(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.in_(set(TOPUP_OPTIONS.keys())))
 async def choose_topup_package(callback: CallbackQuery) -> None:
     """
-    Пользователь выбрал пакет пополнения (350, 1000 или 2000 ₽).
+    Пользователь выбрал пакет пополнения (49, 350, 1000 или 2000 ₽).
     Отправляем инвойс на оплату.
     """
     option_key = callback.data
@@ -287,6 +318,24 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
 
     await callback.answer()
 
+    # Логируем создание инвойса
+    user_id = callback.from_user.id
+    username = callback.from_user.username or "—"
+    bot = callback.bot
+
+    await send_admin_log(
+        bot,
+        (
+            "💳 <b>Создан инвойс на пополнение баланса</b>\n"
+            f"Пользователь: <code>{user_id}</code> @{username}\n"
+            f"Сумма к оплате (invoice): <b>{pay_amount_rub} ₽</b>\n"
+            f"Будет зачислено на баланс: <b>{credit_amount_rub} ₽</b>\n"
+            f"Тариф (callback_data): <code>{option_key}</code>\n"
+            f"payload: <code>{payload}</code>\n"
+            f"provider_data: <code>{provider_data}</code>"
+        ),
+    )
+
 
 # =====================================================================
 # Другая сумма
@@ -294,6 +343,10 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "topup_custom")
 async def topup_custom_start(callback: CallbackQuery, state: FSMContext) -> None:
+    bot = callback.bot
+    user_id = callback.from_user.id
+    username = callback.from_user.username or "—"
+
     await callback.message.edit_text(
         "Введи сумму пополнения в рублях (от 100 до 10 000), только число.\n\n"
         "Например: 500"
@@ -301,17 +354,48 @@ async def topup_custom_start(callback: CallbackQuery, state: FSMContext) -> None
     await state.set_state(TopupStates.waiting_for_custom_amount)
     await callback.answer()
 
+    # Логируем переход к вводу произвольной суммы
+    await send_admin_log(
+        bot,
+        (
+            "📝 <b>Пользователь выбирает произвольную сумму пополнения</b>\n"
+            f"Пользователь: <code>{user_id}</code> @{username}"
+        ),
+    )
+
 
 @router.message(TopupStates.waiting_for_custom_amount)
 async def topup_custom_amount(message: Message, state: FSMContext) -> None:
+    bot = message.bot
+    user_id = message.from_user.id
+    username = message.from_user.username or "—"
+
     raw = message.text.replace(" ", "")
     if not raw.isdigit():
         await message.answer("Пожалуйста, отправь сумму цифрами, например: 500")
+
+        await send_admin_log(
+            bot,
+            (
+                "⚠️ <b>Некорректный ввод суммы пополнения</b>\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
+                f"Введено: <code>{message.text}</code>"
+            ),
+        )
         return
 
     amount_rub = int(raw)
     if amount_rub < 100 or amount_rub > 10_000:
         await message.answer("Сумма должна быть от 100 до 10 000 ₽. Попробуй ещё раз.")
+
+        await send_admin_log(
+            bot,
+            (
+                "⚠️ <b>Сумма пополнения вне допустимого диапазона</b>\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
+                f"Запрошенная сумма: <b>{amount_rub} ₽</b>"
+            ),
+        )
         return
 
     credit_amount_rub = amount_rub
@@ -354,6 +438,20 @@ async def topup_custom_amount(message: Message, state: FSMContext) -> None:
 
     await state.clear()
 
+    # Логируем создание инвойса с произвольной суммой
+    await send_admin_log(
+        bot,
+        (
+            "💳 <b>Создан инвойс с произвольной суммой пополнения</b>\n"
+            f"Пользователь: <code>{user_id}</code> @{username}\n"
+            f"Сумма к оплате (invoice): <b>{amount_rub} ₽</b>\n"
+            f"Будет зачислено на баланс: <b>{credit_amount_rub} ₽</b>\n"
+            "Тип: <code>custom</code>\n"
+            f"payload: <code>{payload}</code>\n"
+            f"provider_data: <code>{provider_data}</code>"
+        ),
+    )
+
 
 # =====================================================================
 # Pre Checkout
@@ -369,11 +467,38 @@ async def process_pre_checkout(
     на каждый PreCheckoutQuery нужно ответить answerPreCheckoutQuery.
     """
     payload = pre_checkout_query.invoice_payload
+    total_amount = pre_checkout_query.total_amount
+    currency = pre_checkout_query.currency
+    user = pre_checkout_query.from_user
+    username = user.username or "—"
+    user_id = user.id
 
-    print("=== PRE CHECKOUT ===")
-    print("payload:", payload)
-    print("total_amount:", pre_checkout_query.total_amount)
-    print("currency:", pre_checkout_query.currency)
+    order_info = pre_checkout_query.order_info
+    email = None
+    phone_number = None
+    shipping_address = None
+
+    if order_info is not None:
+        email = getattr(order_info, "email", None)
+        phone_number = getattr(order_info, "phone_number", None)
+        shipping_address = getattr(order_info, "shipping_address", None)
+
+    # Логируем pre-checkout (по сути "чек до подтверждения")
+    amount_rub = total_amount / 100.0
+
+    await send_admin_log(
+        bot,
+        (
+            "🧾 <b>PreCheckout по пополнению баланса</b>\n"
+            f"Пользователь: <code>{user_id}</code> @{username}\n"
+            f"Сумма (total_amount): <b>{total_amount}</b> (≈ {amount_rub:.2f} {currency})\n"
+            f"Валюта: <b>{currency}</b>\n"
+            f"payload: <code>{payload}</code>\n"
+            f"email: <code>{email or '—'}</code>\n"
+            f"phone_number: <code>{phone_number or '—'}</code>\n"
+            f"shipping_address: <code>{str(shipping_address) if shipping_address else '—'}</code>"
+        ),
+    )
 
     if not payload.startswith("balance_topup"):
         await bot.answer_pre_checkout_query(
@@ -382,6 +507,17 @@ async def process_pre_checkout(
             error_message=(
                 "Платёж не прошёл.\n"
                 "Попробуй ещё раз или выбери другую сумму."
+            ),
+        )
+
+        # Логируем отказ pre-checkout
+        await send_admin_log(
+            bot,
+            (
+                "❌ <b>PreCheckout отклонён: некорректный payload</b>\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
+                f"payload: <code>{payload}</code>\n"
+                f"Сумма (total_amount): <b>{total_amount}</b> ({amount_rub:.2f} {currency})"
             ),
         )
         return
@@ -398,13 +534,6 @@ async def successful_payment_handler(message: Message) -> None:
     payment: SuccessfulPayment = message.successful_payment
     payload = payment.invoice_payload
 
-    print("=== SUCCESSFUL PAYMENT ===")
-    print("payload:", payload)
-    print("total_amount:", payment.total_amount)
-    print("currency:", payment.currency)
-    print("telegram_charge_id:", payment.telegram_payment_charge_id)
-    print("provider_charge_id:", payment.provider_payment_charge_id)
-
     # Обрабатываем только пополнение баланса
     if not payload.startswith("balance_topup"):
         return
@@ -412,6 +541,9 @@ async def successful_payment_handler(message: Message) -> None:
     credited_amount_rub = payment.total_amount // 100
 
     telegram_id = message.from_user.id
+    username = message.from_user.username or "—"
+    bot = message.bot
+
     new_balance = await add_to_balance_rub(telegram_id, credited_amount_rub)
 
     text = (
@@ -426,6 +558,24 @@ async def successful_payment_handler(message: Message) -> None:
         reply_markup=get_after_success_keyboard(),
     )
 
+    # Лог успешного пополнения "как в чеке"
+    total_amount_rub = payment.total_amount / 100.0
+
+    await send_admin_log(
+        bot,
+        (
+            "✅ <b>Успешное пополнение баланса</b>\n"
+            f"Пользователь: <code>{telegram_id}</code> @{username}\n"
+            f"Сумма платежа (total_amount): <b>{payment.total_amount}</b> "
+            f"(≈ {total_amount_rub:.2f} {payment.currency})\n"
+            f"Зачислено на баланс: <b>{credited_amount_rub} ₽</b>\n"
+            f"Новый баланс пользователя: <b>{new_balance} ₽</b>\n"
+            f"payload: <code>{payload}</code>\n"
+            f"telegram_payment_charge_id: <code>{payment.telegram_payment_charge_id}</code>\n"
+            f"provider_payment_charge_id: <code>{payment.provider_payment_charge_id}</code>"
+        ),
+    )
+
 
 # =====================================================================
 # Сообщение «платёж не прошёл»
@@ -433,9 +583,22 @@ async def successful_payment_handler(message: Message) -> None:
 
 @router.callback_query(F.data == "payment_failed_show_message")
 async def payment_failed_message(callback: CallbackQuery) -> None:
+    user_id = callback.from_user.id
+    username = callback.from_user.username or "—"
+    bot = callback.bot
+
     await callback.message.answer(
         "Платёж не прошёл.\n"
         "Попробуй ещё раз или выбери другую сумму.",
         reply_markup=get_payment_error_keyboard(),
     )
     await callback.answer()
+
+    # Логируем факт показа сообщения о неуспешном платеже
+    await send_admin_log(
+        bot,
+        (
+            "❌ <b>Пользователь увидел сообщение о неуспешном платеже</b>\n"
+            f"Пользователь: <code>{user_id}</code> @{username}"
+        ),
+    )
