@@ -11,15 +11,27 @@ from src.keyboards import get_start_keyboard, back_to_main_menu_keyboard
 
 router = Router()
 
-
 @router.message(CommandStart())
 async def command_start(message: Message, state: FSMContext):
+    # Пытаемся вытащить реферальный ID из /start payload
+    # /start <referrer_telegram_id>
+    referrer_telegram_id: int | None = None
+
+    if message.text:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) == 2:
+            payload = parts[1]
+            if payload.isdigit():
+                possible_ref_id = int(payload)
+                # Не даём юзеру быть своим же реферером
+                if possible_ref_id != message.from_user.id:
+                    referrer_telegram_id = possible_ref_id
+
     # создаём/обновляем пользователя в БД
     await get_or_create_user(
         telegram_id=message.from_user.id,
         username=message.from_user.username,
-        # сюда можно добавить referrer_telegram_id, если уже сделал реферальную связку
-        # referrer_telegram_id=...
+        referrer_telegram_id=referrer_telegram_id,
     )
 
     await state.set_state(MainStates.start)
@@ -51,9 +63,9 @@ async def referral_link_command(message: Message):
     await message.answer(
         "Вот твоя реферальная ссылка:\n"
         f"{link}\n\n"
-        "Отправь её друзьям — ты будешь получать 10% от всех их пополнений на свой баланс."
+        "Отправь её друзьям — за каждую их успешную фотосессию "
+        "ты будешь получать <b>5 ₽</b> на свой баланс."
     )
-
 
 @router.callback_query(F.data == "referral_link")
 async def referral_link_button(callback: CallbackQuery):
@@ -76,5 +88,7 @@ async def referral_link_button(callback: CallbackQuery):
     await callback.message.edit_text(
         "Вот твоя реферальная ссылка:\n"
         f"{link}\n\n"
-        "Отправь её друзьям — ты будешь получать 10% от всех их пополнений на свой баланс.", reply_markup=back_to_main_menu_keyboard()
+        "Отправь её друзьям — за каждую их успешную фотосессию "
+        "ты будешь получать <b>5 ₽</b> на свой баланс.",
+        reply_markup=back_to_main_menu_keyboard(),
     )

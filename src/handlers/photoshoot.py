@@ -41,7 +41,7 @@ from src.db import (
     get_styles_by_category_and_gender,
     StyleGender,
     get_all_style_categories,
-    get_style_categories_for_gender,
+    get_style_categories_for_gender, get_user_by_telegram_id, change_user_balance,
 )
 
 router = Router()
@@ -663,15 +663,22 @@ async def back_to_album(callback: CallbackQuery, state: FSMContext):
 def get_insufficient_balance_keyboard() -> InlineKeyboardMarkup:
     """
     Кнопки:
-    - Пополнить баланс (ведёт в раздел Баланс)
+    - Пополнить на 49 ₽ (создаёт инвойс на 49 ₽)
+    - Другие варианты пополнения (открывает экран Баланса)
     - Вернуться в главное меню
     """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Пополнить баланс",
-                    callback_data="open_balance",
+                    text="Пополнить на 49 ₽",
+                    callback_data="topup_49",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Другие варианты пополнения",
+                    callback_data="balance",
                 )
             ],
             [
@@ -682,6 +689,7 @@ def get_insufficient_balance_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
 
 
 @router.message(MainStates.making_photoshoot_process, F.photo)
@@ -765,6 +773,20 @@ async def handle_selfie(message: Message, state: FSMContext):
             provider="comet_gemini_2_5_flash",
         )
 
+        try:
+            user = await get_user_by_telegram_id(message.from_user.id)
+            referrer_id = getattr(user, "referrer_id", None)
+            # Не начисляем, если реферера нет, совпадает с самим пользователем
+            # или пользователь — админ (чтобы не фармить тестами)
+            if (
+                    referrer_id is not None
+                    and referrer_id != message.from_user.id
+                    and not user_is_admin
+            ):
+                await change_user_balance(referrer_id, 5)
+        except Exception as ref_err:
+            logger.error("Не удалось начислить реферальный бонус: %s", ref_err)
+
     except Exception as e:
         # Логируем неудачу
         await log_photoshoot(
@@ -788,17 +810,21 @@ async def handle_selfie(message: Message, state: FSMContext):
         return
 
     # 4. Отправляем результат и сохраняем file_id последнего фото в state
-    sent_message = await message.answer_document(
-        document=generated_photo,
-        caption="Готово! Вот твоё фото в 4K качестве ✨",
+    photo_msg = await message.answer_photo(
+        photo=generated_photo,
     )
 
-    if sent_message.photo:
-        generated_file_id = sent_message.photo[-1].file_id
-        await state.update_data(
-            last_generated_file_id=generated_file_id,
-            last_generated_style_title=style_title,
-        )
+    photo_file_id = photo_msg.photo[-1].file_id
+    await state.update_data(
+        last_generated_file_id=photo_file_id,
+        last_generated_style_title=style_title,
+    )
+
+    # 4.2. Потом тем же файлом отправляем документ 4K
+    await message.answer_document(
+        document=generated_photo,
+        caption="Готово! Вот твоё фото ✨",
+    )
 
     await state.update_data(is_generating=False)
 

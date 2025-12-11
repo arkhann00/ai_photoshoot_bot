@@ -36,10 +36,13 @@ PHOTOSESSION_PRICE_RUB = 50
 
 # Пакеты пополнения: callback_data -> сумма_руб (и платёж, и зачисление)
 TOPUP_OPTIONS: Dict[str, int] = {
+    "topup_49": 49,
     "topup_350": 350,
     "topup_1000": 1000,
     "topup_2000": 2000,
 }
+
+
 
 # Налоговая система для чеков (уточни в ЛК ЮKassa при необходимости)
 # 1 — ОСН, 2 — УСН доход, 3 — УСН доход-расход, 4 — ЕНВД, 5 — ЕСХН, 6 — ПСН
@@ -149,7 +152,7 @@ def get_after_success_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="Создать фотосессию ✨",
-                    callback_data="create_photosession",
+                    callback_data="make_photo",
                 )
             ],
             [
