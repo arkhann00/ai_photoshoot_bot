@@ -18,13 +18,13 @@ from fastapi import (
     Form,
     Query,
 )
-    # noqa: E402
+# noqa: E402
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from sqlalchemy import select, delete as sa_delete
+from sqlalchemy import select, func, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -57,7 +57,12 @@ from src.db import (
     StyleCategory,
     StylePrompt,
     consume_photoshoot_credit_or_balance,
-    get_style_category_by_id, get_all_user_stats, get_admin_users, set_user_admin_flag,
+    get_style_category_by_id,
+    get_all_user_stats,
+    get_admin_users,
+    set_user_admin_flag,
+    set_user_referral_flag,
+    User,
 )
 
 # -------------------------------------------------------------------
@@ -174,8 +179,19 @@ class AdminUsersPageResponse(BaseModel):
 class ChangeValueRequest(BaseModel):
     delta: int
 
+
 class AdminFlagRequest(BaseModel):
     is_admin: bool
+
+
+class AdminReferralFlagRequest(BaseModel):
+    """
+    Запрос для установки/снятия флага реферала.
+    Можно указать либо telegram_id, либо username (один из двух).
+    """
+    telegram_id: Optional[int] = None
+    username: Optional[str] = None
+    is_referral: bool
 
 
 class AdminReportPhotosResponse(BaseModel):
@@ -197,6 +213,15 @@ class AdminReportPaymentsResponse(BaseModel):
 class AdminReportResponse(BaseModel):
     photos: AdminReportPhotosResponse
     payments: AdminReportPaymentsResponse
+
+
+class AdminUserStats(BaseModel):
+    telegram_id: int
+    username: Optional[str]
+    spent_rub: int
+    photos_success: int
+    photos_failed: int
+    last_photoshoot_at: Optional[str]
 
 
 # -------------------------------------------------------------------
@@ -700,6 +725,7 @@ async def api_styles(
         )
     return result
 
+
 # -------------------------------------------------------------------
 # Категории и стили — админка
 # -------------------------------------------------------------------
@@ -792,6 +818,7 @@ async def admin_create_style_category_endpoint(
         gender=category.gender.value,
     )
 
+
 @app.put("/api/admin/style-categories/{category_id}", response_model=StyleCategoryResponse)
 async def admin_update_style_category_endpoint(
     category_id: int,
@@ -850,6 +877,7 @@ async def admin_update_style_category_endpoint(
         gender=db_category.gender.value,
     )
 
+
 @app.get("/api/admin/styles", response_model=list[StyleResponse])
 async def admin_list_styles(
     user: CurrentUser = Depends(get_current_user),
@@ -875,6 +903,7 @@ async def admin_list_styles(
             )
         )
     return result
+
 
 @app.post("/api/admin/styles", response_model=StyleResponse)
 async def admin_create_style_endpoint(
@@ -940,99 +969,6 @@ async def admin_delete_style(
 
     return JSONResponse({"status": "ok"})
 
-class AdminUserStats(BaseModel):
-    telegram_id: int
-    username: Optional[str]
-    spent_rub: int
-    photos_success: int
-    photos_failed: int
-    last_photoshoot_at: Optional[str]
-
-@app.get(
-    "/api/admin/users/stats",
-    response_model=List[AdminUserStats],
-)
-async def admin_users_stats(
-    user: CurrentUser = Depends(get_current_user),
-) -> List[AdminUserStats]:
-    """
-    Таблица пользователей: сколько потратили денег и сколько раз сгенерировали фото.
-    Данные берутся из user_stats (или агрегации по PhotoshootLog) — важно лишь,
-    что get_all_user_stats возвращает список объектов со свойствами:
-    telegram_id, spent_rub, photos_success, photos_failed, last_photoshoot_at.
-    """
-    ensure_admin(user)
-
-    stats_rows = await get_all_user_stats()
-
-    from src.db import User  # локальный импорт
-
-    result: List[AdminUserStats] = []
-
-    async with async_session() as session:
-        for stats in stats_rows:
-            res_user = await session.execute(
-                select(User).where(User.telegram_id == stats.telegram_id)
-            )
-            user_obj = res_user.scalar_one_or_none()
-            username = user_obj.username if user_obj is not None else None
-
-            last_at_str: Optional[str] = None
-            if getattr(stats, "last_photoshoot_at", None) is not None:
-                last_at_str = stats.last_photoshoot_at.isoformat()
-
-            result.append(
-                AdminUserStats(
-                    telegram_id=stats.telegram_id,
-                    username=username,
-                    spent_rub=stats.spent_rub,
-                    photos_success=stats.photos_success,
-                    photos_failed=stats.photos_failed,
-                    last_photoshoot_at=last_at_str,
-                )
-            )
-
-    return result
-
-@app.get(
-    "/api/admin/users/stats",
-    response_model=List[AdminUserStats],
-)
-async def admin_users_stats(
-    user: CurrentUser = Depends(get_current_user),
-) -> List[AdminUserStats]:
-    """
-    Таблица пользователей: сколько потратили денег и сколько раз сгенерировали фото.
-    Данные берутся из таблицы user_stats, которая обновляется при каждом log_photoshoot.
-    """
-    ensure_admin(user)
-
-    stats_rows = await get_all_user_stats()
-
-    from src.db import User  # локальный импорт, чтобы не ломать существующие импорты
-
-    result: List[AdminUserStats] = []
-
-    async with async_session() as session:
-        for stats in stats_rows:
-            res_user = await session.execute(
-                select(User).where(User.telegram_id == stats.telegram_id)
-            )
-            user_obj = res_user.scalar_one_or_none()
-
-            username = user_obj.username if user_obj is not None else None
-
-            result.append(
-                AdminUserStats(
-                    telegram_id=stats.telegram_id,
-                    username=username,
-                    spent_rub=stats.spent_rub,
-                    photos_success=stats.photos_success,
-                    photos_failed=stats.photos_failed,
-                )
-            )
-
-    return result
 
 @app.get(
     "/api/admin/users/stats",
@@ -1051,8 +987,6 @@ async def admin_users_stats(
 
     # получаем агрегированную статистику
     stats_rows = await get_all_user_stats()
-
-    from src.db import User  # локальный импорт, чтобы не ломать существующие импорты
 
     result: List[AdminUserStats] = []
 
@@ -1082,6 +1016,7 @@ async def admin_users_stats(
             )
 
     return result
+
 
 @app.get(
     "/api/admin/admins",
@@ -1116,6 +1051,7 @@ async def admin_get_admins(
         )
 
     return result
+
 
 @app.post(
     "/api/admin/users/{telegram_id}/admin-flag",
@@ -1155,6 +1091,63 @@ async def admin_set_admin_flag_endpoint(
         is_admin=getattr(updated, "is_admin", False),
         created_at=created_at_str,
     )
+
+@app.post(
+    "/api/admin/users/referral-flag",
+    response_model=AdminUserResponse,
+)
+async def admin_set_referral_flag_endpoint(
+    body: AdminReferralFlagRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> AdminUserResponse:
+    """
+    Установка/снятие флага «Реферал» (партнёр) ТОЛЬКО по telegram_id.
+
+    Тело:
+    {
+        "telegram_id": 123456789,
+        "is_referral": true
+    }
+    """
+    ensure_admin(user)
+
+    if body.telegram_id <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="telegram_id должен быть положительным числом",
+        )
+
+    # гарантируем, что пользователь существует в БД
+    db_user = await get_or_create_user(
+        telegram_id=body.telegram_id,
+        username=None,
+    )
+
+    updated = await set_user_referral_flag(
+        telegram_id=db_user.telegram_id,
+        is_referral=body.is_referral,
+    )
+    if updated is None:
+        # сюда попадать не должны, но на всякий случай
+        raise HTTPException(
+            status_code=500,
+            detail="Не удалось обновить флаг реферала",
+        )
+
+    created_at_str = None
+    if getattr(updated, "created_at", None) is not None:
+        created_at_str = updated.created_at.isoformat()
+
+    return AdminUserResponse(
+        telegram_id=updated.telegram_id,
+        username=updated.username,
+        balance=updated.balance,
+        photoshoot_credits=updated.photoshoot_credits,
+        is_admin=getattr(updated, "is_admin", False),
+        created_at=created_at_str,
+    )
+
+
 @app.put(
     "/api/admin/styles/{style_id}",
     response_model=StyleResponse,
@@ -1193,6 +1186,7 @@ async def admin_update_style_endpoint(
         # 3. Обновляем поля
         db_style.title = title
         db_style.description = description
+        db_style.description = description
         db_style.prompt = prompt
         db_style.category_id = category.id
         db_style.gender = category.gender  # пол наследуем от категории
@@ -1215,7 +1209,7 @@ async def admin_update_style_endpoint(
             id=db_style.id,
             title=db_style.title,
             description=db_style.description,
-            prompt=db_style.prompt,             # ← вот этого поля не хватало
+            prompt=db_style.prompt,
             image_filename=db_style.image_filename,
             image_url=image_url,
             is_active=db_style.is_active,
@@ -1223,4 +1217,27 @@ async def admin_update_style_endpoint(
             gender=db_style.gender.value,
         )
 
+class AdminReferralResponse(BaseModel):
+    telegram_id: int
+    username: Optional[str]
+    referrals_count: int
+    earned_rub: int
 
+@app.get(
+    "/api/admin/referrals",
+    response_model=List[AdminReferralResponse],
+)
+async def admin_get_referrals_endpoint(
+    user: CurrentUser = Depends(get_current_user),
+) -> List[AdminReferralResponse]:
+    """
+    Список партнёров-рефералов для админки.
+
+    Сейчас — заглушка: возвращает пустой список.
+    Позже сюда можно подвязать реальные данные из БД.
+    """
+    ensure_admin(user)
+
+    # ВРЕМЕННО: просто пустой список, чтобы фронт не получал 404.
+    # Когда появится логика рефералок в БД, заполни этот список реальными данными.
+    return []

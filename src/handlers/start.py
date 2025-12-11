@@ -3,7 +3,12 @@
 from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 
 from sqlalchemy import select, func  # для подсчёта рефералов
 
@@ -49,6 +54,37 @@ async def get_referrals_count(referrer_telegram_id: int) -> int:
             )
         )
         return int(result.scalar_one_or_none() or 0)
+
+
+def get_referral_partner_keyboard() -> InlineKeyboardMarkup:
+    """
+    Кнопки для партнёра-реферала:
+    - запросить вывод средств
+    - перевести на баланс
+    - вернуться в главное меню
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💸 Запросить вывод средств",
+                    callback_data="referral_withdraw_request",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="↔️ Перевести на баланс",
+                    callback_data="referral_transfer_to_balance",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Главное меню",
+                    callback_data="back_to_main_menu",
+                )
+            ],
+        ]
+    )
 
 
 @router.message(CommandStart())
@@ -112,6 +148,8 @@ async def command_start(message: Message, state: FSMContext):
 async def referral_link_command(message: Message):
     """
     Команда /ref — отдаём реферальную ссылку.
+    Для обычного пользователя — старый текст.
+    Для партнёра-реферала — расширенный блок с количеством рефералов и реферальным балансом.
     """
     me = await message.bot.get_me()
     bot_username = me.username
@@ -124,11 +162,35 @@ async def referral_link_command(message: Message):
 
     link = f"https://t.me/{bot_username}?start={message.from_user.id}"
 
-    await message.answer(
+    user = await get_user_by_telegram_id(message.from_user.id)
+    is_referral_partner = bool(getattr(user, "is_referral", False))
+
+    # Обычный пользователь — старое поведение
+    if not is_referral_partner:
+        await message.answer(
+            "Вот твоя реферальная ссылка:\n"
+            f"{link}\n\n"
+            "Отправь её друзьям — за каждую их успешную фотосессию "
+            "ты будешь получать <b>5 ₽</b> на свой баланс."
+        )
+        return
+
+    # Партнёр-реферал: показываем статистику и кнопки
+    referrals_count = await get_referrals_count(user.telegram_id)
+    referral_balance = int(getattr(user, "referral_earned_rub", 0))
+
+    text = (
         "Вот твоя реферальная ссылка:\n"
         f"{link}\n\n"
         "Отправь её друзьям — за каждую их успешную фотосессию "
-        "ты будешь получать <b>5 ₽</b> на свой баланс."
+        "ты будешь получать <b>5 ₽</b> на свой баланс.\n\n"
+        f"Количество рефералов: <b>{referrals_count}</b>\n"
+        f"Ваш реферальный баланс: <b>{referral_balance} ₽</b>"
+    )
+
+    await message.answer(
+        text,
+        reply_markup=get_referral_partner_keyboard(),
     )
 
 
@@ -136,6 +198,8 @@ async def referral_link_command(message: Message):
 async def referral_link_button(callback: CallbackQuery):
     """
     Обработка нажатия на кнопку 'Реферальная ссылка' в главном меню.
+    Для обычного пользователя — старый текст.
+    Для партнёра-реферала — расширенный блок с количеством рефералов и реферальным балансом.
     """
     await callback.answer()
 
@@ -150,12 +214,122 @@ async def referral_link_button(callback: CallbackQuery):
 
     link = f"https://t.me/{bot_username}?start={callback.from_user.id}"
 
-    await callback.message.edit_text(
+    user = await get_user_by_telegram_id(callback.from_user.id)
+    is_referral_partner = bool(getattr(user, "is_referral", False))
+
+    # Обычный пользователь — старое поведение
+    if not is_referral_partner:
+        await callback.message.edit_text(
+            "Вот твоя реферальная ссылка:\n"
+            f"{link}\n\n"
+            "Отправь её друзьям — за каждую их успешную фотосессию "
+            "ты будешь получать <b>5 ₽</b> на свой баланс.",
+            reply_markup=back_to_main_menu_keyboard(),
+        )
+        return
+
+    # Партнёр-реферал
+    referrals_count = await get_referrals_count(user.telegram_id)
+    referral_balance = int(getattr(user, "referral_earned_rub", 0))
+
+    text = (
         "Вот твоя реферальная ссылка:\n"
         f"{link}\n\n"
         "Отправь её друзьям — за каждую их успешную фотосессию "
-        "ты будешь получать <b>5 ₽</b> на свой баланс.",
-        reply_markup=back_to_main_menu_keyboard(),
+        "ты будешь получать <b>5 ₽</b> на свой баланс.\n\n"
+        f"Количество рефералов: <b>{referrals_count}</b>\n"
+        f"Ваш реферальный баланс: <b>{referral_balance} ₽</b>"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_referral_partner_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "referral_transfer_to_balance")
+async def referral_transfer_to_balance(callback: CallbackQuery):
+    """
+    Переводит накопленный реферальный баланс на обычный баланс пользователя.
+    """
+    await callback.answer()
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == callback.from_user.id)
+        )
+        user: User | None = result.scalar_one_or_none()
+
+        if user is None:
+            await callback.message.answer(
+                "Не удалось найти твой профиль. Обратись к администратору."
+            )
+            return
+
+        if not getattr(user, "is_referral", False):
+            await callback.message.answer(
+                "Эта функция доступна только для реферальных партнёров."
+            )
+            return
+
+        amount = int(getattr(user, "referral_earned_rub", 0) or 0)
+        if amount <= 0:
+            await callback.message.answer(
+                "У тебя пока нет средств для перевода на баланс."
+            )
+            return
+
+        # Переносим начисления в обычный баланс и обнуляем реферальный
+        user.balance = int(user.balance or 0) + amount
+        user.referral_earned_rub = 0
+        await session.commit()
+        new_balance = int(user.balance or 0)
+
+    await callback.message.answer(
+        f"✅ {amount} ₽ перенесены с реферального баланса на основной.\n"
+        f"Текущий баланс: {new_balance} ₽."
+    )
+
+
+@router.callback_query(F.data == "referral_withdraw_request")
+async def referral_withdraw_request(callback: CallbackQuery):
+    """
+    Реферал нажал 'Запросить вывод средств':
+    - в админский чат уходит подробное сообщение,
+    - пользователю показываем подтверждение.
+    """
+    await callback.answer()
+
+    user = await get_user_by_telegram_id(callback.from_user.id)
+    if not getattr(user, "is_referral", False):
+        await callback.message.answer(
+            "Запрос на вывод доступен только для реферальных партнёров."
+        )
+        return
+
+    referrals_count = await get_referrals_count(user.telegram_id)
+    referral_balance = int(getattr(user, "referral_earned_rub", 0))
+    username = callback.from_user.username or "—"
+    full_name = callback.from_user.full_name or "—"
+
+    # Сообщение в админский чат
+    admin_text = (
+        "📤 <b>Запрос на вывод реферальных средств</b>\n"
+        f"Пользователь: <code>{user.telegram_id}</code> @{username}\n"
+        f"Имя в Telegram: {full_name}\n"
+        f"Количество рефералов: <b>{referrals_count}</b>\n"
+        f"Реферальный баланс: <b>{referral_balance} ₽</b>\n"
+        f"Текущий баланс в боте: <b>{int(user.balance or 0)} ₽</b>\n\n"
+        "Пользователь запросил вывод реферальных средств в реальные деньги."
+    )
+
+    await send_admin_log(callback.bot, admin_text)
+
+    # Ответ пользователю
+    await callback.message.answer(
+        "Твой запрос на вывод реферальных средств отправлен администратору.\n"
+        "С тобой свяжутся, как только его обработают.",
+        reply_markup = back_to_main_menu_keyboard()
     )
 
 

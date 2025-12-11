@@ -16,7 +16,7 @@ from sqlalchemy import (
     String,
     func,
     select,
-    case
+    case,
 )
 from sqlalchemy.exc import OperationalError, IntegrityError
 from sqlalchemy.ext.asyncio import (
@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column
+    # noqa
 from sqlalchemy.sql.expression import text
 
 from src.config import settings
@@ -87,6 +88,13 @@ class User(Base):
     photoshoot_credits: Mapped[int] = mapped_column(Integer, default=0)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Новый тип пользователя: «Реферал» (партнёр, который массово рефералит под вывод)
+    is_referral: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Сколько всего денег принесла реферальная программа этому пользователю
+    # (накопительный итог, не обязательно равен текущему балансу)
+    referral_earned_rub: Mapped[int] = mapped_column(Integer, default=0)
+
     # телеграм-id пригласившего пользователя (рефералка)
     referrer_id: Mapped[Optional[int]] = mapped_column(
         BigInteger,
@@ -139,7 +147,6 @@ class StarPayment(Base):
     )
 
 
-
 class StyleCategory(Base):
     __tablename__ = "style_categories"
 
@@ -156,6 +163,7 @@ class StyleCategory(Base):
         DateTime(timezone=True),
         server_default=func.now(),
     )
+
 
 class StylePrompt(Base):
     __tablename__ = "style_prompts"
@@ -176,6 +184,7 @@ class StylePrompt(Base):
         DateTime(timezone=True),
         server_default=func.now(),
     )
+
 
 class PhotoshootLog(Base):
     __tablename__ = "photoshoot_logs"
@@ -198,7 +207,6 @@ class PhotoshootLog(Base):
         DateTime(timezone=True),
         server_default=func.now(),
     )
-
 
 
 MAX_AVATARS_PER_USER = 3
@@ -226,7 +234,6 @@ class UserAvatar(Base):
 # -------------------------------------------------------------------
 
 
-
 async def run_manual_migrations() -> None:
     """
     Ручные ALTER TABLE для уже существующей БД.
@@ -247,9 +254,49 @@ async def run_manual_migrations() -> None:
             if (
                 "no such table: photoshoot_logs" in msg
                 or "duplicate column name: input_photos_count" in msg
-                or "column \"input_photos_count\" of relation \"photoshoot_logs\" already exists" in msg
+                or 'column "input_photos_count" of relation "photoshoot_logs" already exists' in msg
             ):
                 # таблица ещё не создана или колонка уже добавлена — игнорируем
+                pass
+            else:
+                raise
+
+        # --- новый флаг is_referral в таблице users ---
+        try:
+            await conn.execute(
+                text(
+                    "ALTER TABLE users "
+                    "ADD COLUMN is_referral BOOLEAN DEFAULT 0"
+                )
+            )
+        except OperationalError as e:
+            msg = str(e)
+            if (
+                "no such table: users" in msg
+                or "duplicate column name: is_referral" in msg
+                or 'column "is_referral" of relation "users" already exists' in msg
+            ):
+                # таблицы нет или колонка уже есть — игнорируем
+                pass
+            else:
+                raise
+
+        # --- поле referral_earned_rub в таблице users ---
+        try:
+            await conn.execute(
+                text(
+                    "ALTER TABLE users "
+                    "ADD COLUMN referral_earned_rub INTEGER DEFAULT 0"
+                )
+            )
+        except OperationalError as e:
+            msg = str(e)
+            if (
+                "no such table: users" in msg
+                or "duplicate column name: referral_earned_rub" in msg
+                or 'column "referral_earned_rub" of relation "users" already exists' in msg
+            ):
+                # таблицы нет или колонка уже есть — игнорируем
                 pass
             else:
                 raise
@@ -395,6 +442,7 @@ async def run_manual_migrations() -> None:
 
         # сюда при желании можно вернуть твои старые миграции для других таблиц
 
+
 async def init_db() -> None:
     """
     Создаём таблицы по моделям и применяем ручные миграции.
@@ -406,7 +454,7 @@ async def init_db() -> None:
 
 
 # -------------------------------------------------------------------
-# Пользователи / админы
+# Пользователи / админы / рефералы
 # -------------------------------------------------------------------
 
 
@@ -461,6 +509,106 @@ async def set_user_admin_flag(telegram_id: int, is_admin: bool) -> Optional[User
         return user
 
 
+async def set_user_referral_flag(telegram_id: int, is_referral: bool) -> Optional[User]:
+    """
+    Пометить пользователя как «Реферал» (или снять этот флаг).
+    Использовать для партнёров, которые рефералят массово и выводят деньги через админку.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
+        user = result.scalar_one_or_none()
+        if user is None:
+            return None
+
+        user.is_referral = is_referral
+        await session.commit()
+        await session.refresh(user)
+        return user
+
+
+async def get_referral_users() -> list[User]:
+    """
+    Список всех пользователей, помеченных как рефералы (партнёры).
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.is_referral == True)  # noqa: E712
+        )
+        return list(result.scalars().all())
+
+
+async def get_referrals_for_user(referrer_telegram_id: int) -> list[User]:
+    """
+    Все пользователи, которых привёл данный referrer (referrer_id = referrer_telegram_id).
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.referrer_id == referrer_telegram_id)
+        )
+        return list(result.scalars().all())
+
+
+async def get_referrals_count(referrer_telegram_id: int) -> int:
+    """
+    Сколько людей всего зарегистрировалось по реферальной ссылке данного пользователя.
+    """
+    async with async_session() as session:
+        count_value = await session.scalar(
+            select(func.count()).select_from(User).where(
+                User.referrer_id == referrer_telegram_id
+            )
+        )
+        return int(count_value or 0)
+
+
+async def add_referral_earnings(telegram_id: int, amount_rub: int) -> Optional[User]:
+    """
+    Учитываем, что пользователю начислено amount_rub по реферальной программе.
+    Это НЕ меняет баланс, а только накапливает статистику referral_earned_rub.
+    Используй вместе с change_user_balance(...) в момент начисления бонуса.
+    """
+    if amount_rub <= 0:
+        return None
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
+        user = result.scalar_one_or_none()
+        if user is None:
+            return None
+
+        user.referral_earned_rub = (user.referral_earned_rub or 0) + amount_rub
+        await session.commit()
+        await session.refresh(user)
+        return user
+
+
+async def get_referral_summary(telegram_id: int) -> Tuple[int, int]:
+    """
+    Сводка рефералки по пользователю:
+    - total_earned: сколько всего рублей принесла реферальная программа.
+    - total_referrals: сколько людей пришло по его ссылке.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
+        user = result.scalar_one_or_none()
+        total_earned = 0
+        if user is not None and user.referral_earned_rub is not None:
+            total_earned = int(user.referral_earned_rub)
+
+        referrals_count = await session.scalar(
+            select(func.count()).select_from(User).where(
+                User.referrer_id == telegram_id
+            )
+        )
+        return total_earned, int(referrals_count or 0)
+
+
 async def is_user_admin_db(telegram_id: int) -> bool:
     async with async_session() as session:
         result = await session.execute(
@@ -502,7 +650,9 @@ async def get_user_balance(telegram_id: int) -> int:
     user = await get_user_by_telegram_id(telegram_id)
     return user.balance
 
+
 # ---------- Потребление фотосессий (кредиты/рубли) ----------
+
 
 async def consume_photoshoot_credit_or_balance(
     telegram_id: int,
@@ -543,7 +693,6 @@ async def consume_photoshoot_credit_or_balance(
         # 3) Ничего списать не удалось
         await session.rollback()
         return False
-
 
 
 async def get_users_page(page: int = 0, page_size: int = 10) -> tuple[list[User], int]:
@@ -1034,7 +1183,6 @@ async def create_style_prompt(
         return style
 
 
-
 async def get_styles_for_category(category_id: int) -> list[StylePrompt]:
     async with async_session() as session:
         result = await session.execute(
@@ -1065,6 +1213,7 @@ async def get_styles_by_category_and_gender(
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
+
 class UserStats(Base):
     __tablename__ = "user_stats"
 
@@ -1083,7 +1232,6 @@ class UserStats(Base):
         DateTime(timezone=True),
         nullable=True,
     )
-
 
 
 async def get_or_create_user_stats(telegram_id: int) -> UserStats:
@@ -1109,6 +1257,7 @@ async def get_or_create_user_stats(telegram_id: int) -> UserStats:
         await session.commit()
         await session.refresh(stats)
         return stats
+
 
 async def get_all_user_stats() -> list[UserStats]:
     """

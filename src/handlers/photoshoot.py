@@ -1,3 +1,5 @@
+# src/handlers/photoshoot.py
+
 from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -45,6 +47,7 @@ from src.db import (
     get_style_categories_for_gender,
     get_user_by_telegram_id,
     change_user_balance,
+    add_referral_earnings,
 )
 
 router = Router()
@@ -835,24 +838,47 @@ async def handle_selfie(message: Message, state: FSMContext):
         try:
             user = await get_user_by_telegram_id(message.from_user.id)
             referrer_id = getattr(user, "referrer_id", None)
+
             if (
                 referrer_id is not None
                 and referrer_id != message.from_user.id
                 and not user_is_admin
             ):
-                await change_user_balance(referrer_id, 5)
+                referrer = await get_user_by_telegram_id(referrer_id)
+                referrer_username = referrer.username or "—"
+                bonus_rub = 5
 
-                await send_admin_log(
-                    message.bot,
-                    (
-                        "💰 <b>Реферальный бонус за фотосессию</b>\n"
-                        f"Реферер: <code>{referrer_id}</code>\n"
-                        f"Новый пользователь: <code>{message.from_user.id}</code> @{username}\n"
-                        "Начислено: 5 ₽ на баланс реферера"
-                    ),
-                )
+                # Если реферер НЕ помечен как партнёр (is_referral == False):
+                # начисляем и баланс, и статистику заработка.
+                if not getattr(referrer, "is_referral", False):
+                    await change_user_balance(referrer_id, bonus_rub)
+                    await add_referral_earnings(referrer_id, bonus_rub)
+
+                    await send_admin_log(
+                        message.bot,
+                        (
+                            "💰 <b>Реферальный бонус за фотосессию</b>\n"
+                            f"Реферер: <code>{referrer_id}</code> @{referrer_username}\n"
+                            f"Новый пользователь: <code>{message.from_user.id}</code> @{username}\n"
+                            f"Начислено: {bonus_rub} ₽ на баланс и в referral_earned_rub"
+                        ),
+                    )
+                else:
+                    # Если реферер — партнёр (is_referral == True):
+                    # баланс НЕ меняем, учитываем только заработок.
+                    await add_referral_earnings(referrer_id, bonus_rub)
+
+                    await send_admin_log(
+                        message.bot,
+                        (
+                            "🤝 <b>Реферальный заработок партнёра</b>\n"
+                            f"Партнёр (реферер): <code>{referrer_id}</code> @{referrer_username}\n"
+                            f"Новый пользователь: <code>{message.from_user.id}</code> @{username}\n"
+                            f"Учтено: {bonus_rub} ₽ в referral_earned_rub (баланс не изменён)"
+                        ),
+                    )
         except Exception as ref_err:
-            logger.error("Не удалось начислить реферальный бонус: %s", ref_err)
+            logger.error("Не удалось обработать реферальный бонус: %s", ref_err)
             await send_admin_log(
                 message.bot,
                 (
