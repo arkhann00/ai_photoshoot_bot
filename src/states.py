@@ -13,6 +13,8 @@ class MainStates(StatesGroup):
     making_photoshoot_failed = State()
     making_photoshoot_success = State()
 
+    send_supoort_message = State()
+
 
 class AdminStates(StatesGroup):
     admin_menu = State()
