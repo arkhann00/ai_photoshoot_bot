@@ -1,6 +1,6 @@
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.keyboards import back_to_main_menu_keyboard
 from src.states import MainStates
@@ -76,6 +76,17 @@ async def send_support_message(message: Message, state: FSMContext):
         reply_markup=back_to_main_menu_keyboard(),
     )
     await state.clear()
+
+def successful_support_answer_keyboard():
+    answer_button = InlineKeyboardButton(
+        text="Ответить",
+        callback_data="support",
+    )
+    back_button = InlineKeyboardButton(
+        text="« Назад",
+        callback_data="back_to_main_menu",
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[[back_button]])
 
 @router.message(F.chat.id == SUPPORT_CHAT_ID)
 async def handle_support_group_reply(message: Message):
