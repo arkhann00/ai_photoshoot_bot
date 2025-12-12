@@ -110,13 +110,13 @@ async def handle_support_group_reply(message: Message):
         await bot.send_message(
             chat_id=user_id,
             text=f"💬 Ответ поддержки:\n{message.text}",
-            reply_markup=back_to_main_menu_keyboard(),
+            reply_markup=successful_support_answer_keyboard(),
         )
     else:
         await bot.send_message(
             chat_id=user_id,
             text="💬 Ответ поддержки:",
-            reply_markup=back_to_main_menu_keyboard(),
+            reply_markup=successful_support_answer_keyboard(),
         )
         await bot.copy_message(
             chat_id=user_id,
