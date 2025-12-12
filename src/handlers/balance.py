@@ -5,6 +5,7 @@ import json
 from typing import Dict
 
 from aiogram import Router, F, Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import (
     CallbackQuery,
     Message,
@@ -270,27 +271,23 @@ async def open_balance(callback: CallbackQuery) -> None:
 # =====================================================================
 @router.callback_query(F.data.in_(tuple(TOPUP_OPTIONS.keys())))
 async def choose_topup_package(callback: CallbackQuery) -> None:
-    """
-    Пользователь выбрал пакет пополнения (49, 350, 1000 или 2000 ₽).
-    Отправляем инвойс на оплату.
-    """
-    await callback.answer()  # сразу отвечаем, чтобы у пользователя не было "зависания"
+    await callback.answer()  # сразу, чтобы не "крутилось"
 
     option_key = callback.data
     pay_amount_rub = TOPUP_OPTIONS.get(option_key)
     if not pay_amount_rub:
         await callback.message.answer(
-            "Не удалось определить сумму пополнения. Открой раздел «Баланс» и попробуй ещё раз.",
+            "Не удалось определить сумму пополнения. Открой «Баланс» и попробуй ещё раз.",
             reply_markup=get_payment_error_keyboard(),
         )
         return
 
-    credit_amount_rub = pay_amount_rub  # пополняем 1 к 1
+    credit_amount_rub = pay_amount_rub
 
     prices = [
         LabeledPrice(
             label=f"Пополнение баланса на {credit_amount_rub} ₽",
-            amount=pay_amount_rub * 100,  # копейки
+            amount=pay_amount_rub * 100,
         )
     ]
 
@@ -306,7 +303,9 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
     bot = callback.bot
 
     try:
-        await callback.message.answer_invoice(
+        # ✅ ВАЖНО: всегда шлём инвойс в ЛИЧКУ пользователю
+        await bot.send_invoice(
+            chat_id=user_id,
             title="Пополнение баланса",
             description=(
                 "Пополнение баланса аккаунта.\n"
@@ -318,7 +317,6 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
             prices=prices,
             payload=payload,
             start_parameter="balance_topup",
-            # чек ЮKassa
             need_email=True,
             send_email_to_provider=True,
             need_phone_number=False,
@@ -328,35 +326,62 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
             max_tip_amount=0,
             provider_data=provider_data,
         )
-    except Exception as e:
+
+        # Если кнопку нажали НЕ в личке — можно подсказать где искать оплату
+        if callback.message and callback.message.chat.id != user_id:
+            await callback.message.answer("Я отправил оплату тебе в личные сообщения с ботом ✅")
+
+    except TelegramForbiddenError as e:
+        # Бот не может написать пользователю в личку (не нажимал /start)
+        await send_admin_log(
+            bot,
+            (
+                "🔴 <b>Не удалось отправить invoice в личку (Forbidden)</b>\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
+                f"Тариф: <code>{option_key}</code>\n"
+                f"Ошибка: <code>{e}</code>"
+            ),
+        )
+        await callback.message.answer(
+            "Чтобы оплатить, открой бота в личных сообщениях и нажми «Баланс» → выбери сумму.\n"
+            "Если бот ещё не открыт — нажми /start в личке.",
+            reply_markup=get_payment_error_keyboard(),
+        )
+
+    except TelegramBadRequest as e:
+        # Тут будет реальная причина от Telegram (и её нужно видеть)
+        await send_admin_log(
+            bot,
+            (
+                "🔴 <b>Ошибка TelegramBadRequest при отправке invoice</b>\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
+                f"Тариф: <code>{option_key}</code>\n"
+                f"Сумма: <b>{pay_amount_rub} ₽</b>\n"
+                f"provider_data: <code>{provider_data}</code>\n"
+                f"Ошибка: <code>{e}</code>"
+            ),
+        )
         await callback.message.answer(
             "Не удалось открыть оплату 😔\n"
             "Попробуй ещё раз или выбери другую сумму.",
             reply_markup=get_payment_error_keyboard(),
         )
+
+    except Exception as e:
         await send_admin_log(
             bot,
             (
-                "🔴 <b>Ошибка при отправке invoice</b>\n"
+                "🔴 <b>Неизвестная ошибка при отправке invoice</b>\n"
                 f"Пользователь: <code>{user_id}</code> @{username}\n"
                 f"Тариф: <code>{option_key}</code>\n"
-                f"Сумма: <b>{pay_amount_rub} ₽</b>\n"
                 f"Ошибка: <code>{e}</code>"
             ),
         )
-        return
-
-    await send_admin_log(
-        bot,
-        (
-            "💳 <b>Создан инвойс на пополнение баланса</b>\n"
-            f"Пользователь: <code>{user_id}</code> @{username}\n"
-            f"Сумма к оплате (invoice): <b>{pay_amount_rub} ₽</b>\n"
-            f"Будет зачислено на баланс: <b>{credit_amount_rub} ₽</b>\n"
-            f"Тариф (callback_data): <code>{option_key}</code>\n"
-            f"payload: <code>{payload}</code>"
-        ),
-    )
+        await callback.message.answer(
+            "Не удалось открыть оплату 😔\n"
+            "Попробуй ещё раз или выбери другую сумму.",
+            reply_markup=get_payment_error_keyboard(),
+        )
 
 
 # =====================================================================
