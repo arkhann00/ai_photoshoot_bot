@@ -5,7 +5,7 @@ import enum
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 from uuid import uuid4
-
+import datetime as dt
 from fastapi import HTTPException
 from sqlalchemy import (
     BigInteger,
@@ -1275,9 +1275,11 @@ class SupportTopic(Base):
 
     telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     thread_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True, nullable=False)
-    created_at: Mapped = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
 async def get_support_thread_id(telegram_id: int) -> Optional[int]:
     async with async_session() as session:
         obj = await session.get(SupportTopic, telegram_id)
