@@ -77,7 +77,6 @@ class PhotoshootStatus(str, enum.Enum):
 # Модели
 # -------------------------------------------------------------------
 
-
 class User(Base):
     __tablename__ = "users"
 

@@ -34,7 +34,7 @@ ADM_GROUP_ID = -5075627878
 PAYMENT_PROVIDER_TOKEN = "390540012:LIVE:84036"
 
 # Цена одной фотосессии в рублях
-PHOTOSESSION_PRICE_RUB = 50
+PHOTOSESSION_PRICE_RUB = 49
 
 # Пакеты пополнения: callback_data -> сумма_руб (и платёж, и зачисление)
 TOPUP_OPTIONS: Dict[str, int] = {
@@ -268,21 +268,29 @@ async def open_balance(callback: CallbackQuery) -> None:
 # =====================================================================
 # Выбор готового пакета пополнения
 # =====================================================================
-
-@router.callback_query(F.data.in_(set(TOPUP_OPTIONS.keys())))
+@router.callback_query(F.data.in_(tuple(TOPUP_OPTIONS.keys())))
 async def choose_topup_package(callback: CallbackQuery) -> None:
     """
     Пользователь выбрал пакет пополнения (49, 350, 1000 или 2000 ₽).
     Отправляем инвойс на оплату.
     """
+    await callback.answer()  # сразу отвечаем, чтобы у пользователя не было "зависания"
+
     option_key = callback.data
-    pay_amount_rub = TOPUP_OPTIONS[option_key]
+    pay_amount_rub = TOPUP_OPTIONS.get(option_key)
+    if not pay_amount_rub:
+        await callback.message.answer(
+            "Не удалось определить сумму пополнения. Открой раздел «Баланс» и попробуй ещё раз.",
+            reply_markup=get_payment_error_keyboard(),
+        )
+        return
+
     credit_amount_rub = pay_amount_rub  # пополняем 1 к 1
 
     prices = [
         LabeledPrice(
             label=f"Пополнение баланса на {credit_amount_rub} ₽",
-            amount=pay_amount_rub * 100,  # amount в копейках
+            amount=pay_amount_rub * 100,  # копейки
         )
     ]
 
@@ -293,35 +301,50 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
         amount_rub=pay_amount_rub,
     )
 
-    await callback.message.answer_invoice(
-        title="Пополнение баланса",
-        description=(
-            "Пополнение баланса аккаунта.\n"
-            f"Вы платите {pay_amount_rub} ₽, "
-            f"на баланс будет зачислено {credit_amount_rub} ₽."
-        ),
-        provider_token=PAYMENT_PROVIDER_TOKEN,
-        currency="RUB",
-        prices=prices,
-        payload=payload,
-        start_parameter="balance_topup",
-        # важные флаги для чека через ЮKassa (способ 2 из письма поддержки)
-        need_email=True,
-        send_email_to_provider=True,
-        need_phone_number=False,
-        send_phone_number_to_provider=False,
-        need_shipping_address=False,
-        is_flexible=False,
-        max_tip_amount=0,
-        provider_data=provider_data,
-    )
-
-    await callback.answer()
-
-    # Логируем создание инвойса
     user_id = callback.from_user.id
     username = callback.from_user.username or "—"
     bot = callback.bot
+
+    try:
+        await callback.message.answer_invoice(
+            title="Пополнение баланса",
+            description=(
+                "Пополнение баланса аккаунта.\n"
+                f"Вы платите {pay_amount_rub} ₽, "
+                f"на баланс будет зачислено {credit_amount_rub} ₽."
+            ),
+            provider_token=PAYMENT_PROVIDER_TOKEN,
+            currency="RUB",
+            prices=prices,
+            payload=payload,
+            start_parameter="balance_topup",
+            # чек ЮKassa
+            need_email=True,
+            send_email_to_provider=True,
+            need_phone_number=False,
+            send_phone_number_to_provider=False,
+            need_shipping_address=False,
+            is_flexible=False,
+            max_tip_amount=0,
+            provider_data=provider_data,
+        )
+    except Exception as e:
+        await callback.message.answer(
+            "Не удалось открыть оплату 😔\n"
+            "Попробуй ещё раз или выбери другую сумму.",
+            reply_markup=get_payment_error_keyboard(),
+        )
+        await send_admin_log(
+            bot,
+            (
+                "🔴 <b>Ошибка при отправке invoice</b>\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
+                f"Тариф: <code>{option_key}</code>\n"
+                f"Сумма: <b>{pay_amount_rub} ₽</b>\n"
+                f"Ошибка: <code>{e}</code>"
+            ),
+        )
+        return
 
     await send_admin_log(
         bot,
@@ -331,8 +354,7 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
             f"Сумма к оплате (invoice): <b>{pay_amount_rub} ₽</b>\n"
             f"Будет зачислено на баланс: <b>{credit_amount_rub} ₽</b>\n"
             f"Тариф (callback_data): <code>{option_key}</code>\n"
-            f"payload: <code>{payload}</code>\n"
-            f"provider_data: <code>{provider_data}</code>"
+            f"payload: <code>{payload}</code>"
         ),
     )
 

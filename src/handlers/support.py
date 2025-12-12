@@ -21,7 +21,7 @@ def successful_support_answer_keyboard():
         text="« Назад",
         callback_data="back_to_main_menu",
     )
-    return InlineKeyboardMarkup(inline_keyboard=[[back_button], [answer_button]])
+    return InlineKeyboardMarkup(inline_keyboard=[[answer_button], [back_button]])
 
 @router.callback_query(F.data == "support")
 async def support(callback: CallbackQuery, state: FSMContext):
@@ -104,7 +104,7 @@ async def handle_support_reply(message: Message):
     if message.text:
         await bot.send_message(
             chat_id=user_id,
-            text=f"💬 Ответ поддержки:\n{message.text}",
+            text=f"💬 Ответ поддержки:\n\n{message.text}",
             reply_markup=successful_support_answer_keyboard(),
         )
     else:
