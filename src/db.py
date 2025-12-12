@@ -1268,3 +1268,36 @@ async def get_all_user_stats() -> list[UserStats]:
             select(UserStats).order_by(UserStats.spent_rub.desc())
         )
         return list(result.scalars().all())
+
+
+class SupportTopic(Base):
+    __tablename__ = "support_topics"
+
+    telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    thread_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True, nullable=False)
+    created_at: Mapped = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+async def get_support_thread_id(telegram_id: int) -> Optional[int]:
+    async with async_session() as session:
+        obj = await session.get(SupportTopic, telegram_id)
+        return int(obj.thread_id) if obj else None
+
+
+async def get_support_user_id_by_thread(thread_id: int) -> Optional[int]:
+    async with async_session() as session:
+        res = await session.execute(
+            select(SupportTopic.telegram_id).where(SupportTopic.thread_id == thread_id)
+        )
+        val = res.scalar_one_or_none()
+        return int(val) if val is not None else None
+
+
+async def bind_support_thread(telegram_id: int, thread_id: int) -> None:
+    async with async_session() as session:
+        session.add(SupportTopic(telegram_id=telegram_id, thread_id=thread_id))
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            # кто-то уже записал — ок

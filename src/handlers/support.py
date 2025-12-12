@@ -4,11 +4,24 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKe
 
 from src.keyboards import back_to_main_menu_keyboard
 from src.states import MainStates
-from src.services.support_topics import get_or_create_forum_thread, get_user_id_for_thread
+from src.config import settings
+from src.services.support_topics import get_or_create_support_thread
+from src.db import get_support_user_id_by_thread
 
 router = Router()
 
 SUPPORT_CHAT_ID = -1003326572292
+
+def successful_support_answer_keyboard():
+    answer_button = InlineKeyboardButton(
+        text="Ответить",
+        callback_data="support",
+    )
+    back_button = InlineKeyboardButton(
+        text="« Назад",
+        callback_data="back_to_main_menu",
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[[back_button], [answer_button]])
 
 @router.callback_query(F.data == "support")
 async def support(callback: CallbackQuery, state: FSMContext):
@@ -33,36 +46,31 @@ async def send_support_message(message: Message, state: FSMContext):
         await message.answer("Не удалось определить пользователя.")
         return
 
-    # 1) получаем/создаём тему под пользователя
-    thread_id, created_now = await get_or_create_forum_thread(bot, user)
+    thread_id, created_now = await get_or_create_support_thread(bot, user)
 
-    # 2) если тема только что создана — отправим “шапку”
     if created_now:
-        username = f"@{user.username}" if user.username else "—"
         await bot.send_message(
             chat_id=SUPPORT_CHAT_ID,
             message_thread_id=thread_id,
             text=(
-                "🆕 Создана тема пользователя\n"
+                "🆕 Тема поддержки создана\n"
                 f"Имя: {user.full_name}\n"
-                f"Username: {username}\n"
-                f"ID: {user.id}"
+                f"Username: @{user.username}" if user.username else f"ID: {user.id}"
             ),
         )
 
-    # 3) отправляем сообщение пользователя в тему (копируем контент)
+    # отправляем сообщение в тему
     if message.text:
         await bot.send_message(
             chat_id=SUPPORT_CHAT_ID,
             message_thread_id=thread_id,
-            text=f"📩 Сообщение:\n{message.text}",
+            text=f"📩 Сообщение от пользователя:\n{message.text}",
         )
     else:
-        # фото/видео/документ/voice/etc — копируем как есть
         await bot.send_message(
             chat_id=SUPPORT_CHAT_ID,
             message_thread_id=thread_id,
-            text="📩 Сообщение (вложение):",
+            text="📩 Сообщение от пользователя (вложение):",
         )
         await bot.copy_message(
             chat_id=SUPPORT_CHAT_ID,
@@ -77,35 +85,22 @@ async def send_support_message(message: Message, state: FSMContext):
     )
     await state.clear()
 
-def successful_support_answer_keyboard():
-    answer_button = InlineKeyboardButton(
-        text="Ответить",
-        callback_data="support",
-    )
-    back_button = InlineKeyboardButton(
-        text="« Назад",
-        callback_data="back_to_main_menu",
-    )
-    return InlineKeyboardMarkup(inline_keyboard=[[back_button]])
 
 @router.message(F.chat.id == SUPPORT_CHAT_ID)
-async def handle_support_group_reply(message: Message):
-    # игнорируем сообщения не из темы
+async def handle_support_reply(message: Message):
+    # только ответы из темы
     if not message.message_thread_id:
         return
 
-    # игнорируем ботов (в т.ч. самого бота)
     if message.from_user and message.from_user.is_bot:
         return
 
-    thread_id = int(message.message_thread_id)
-    user_id = await get_user_id_for_thread(thread_id)
+    user_id = await get_support_user_id_by_thread(int(message.message_thread_id))
     if not user_id:
         return
 
     bot = message.bot
 
-    # Ответ саппорта -> пользователю
     if message.text:
         await bot.send_message(
             chat_id=user_id,
@@ -123,3 +118,5 @@ async def handle_support_group_reply(message: Message):
             from_chat_id=message.chat.id,
             message_id=message.message_id,
         )
+
+

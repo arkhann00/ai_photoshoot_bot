@@ -8,6 +8,8 @@ from typing import Optional, Tuple
 from aiogram import Bot
 from aiogram.types import User as TgUser
 
+from src.db import get_support_thread_id, bind_support_thread
+
 SUPPORT_CHAT_ID = -1003326572292
 
 _STORAGE_PATH = Path("support_threads.json")
@@ -99,4 +101,39 @@ async def get_or_create_forum_thread(bot: Bot, user: TgUser) -> Tuple[int, bool]
 
     thread_id = int(topic.message_thread_id)
     await bind_user_thread(user.id, thread_id)
+    return thread_id, True
+
+
+def _topic_title(user: TgUser) -> str:
+    username = f"@{user.username}" if user.username else ""
+    name = (user.full_name or "").strip()
+    parts = []
+    if name:
+        parts.append(name)
+    if username:
+        parts.append(f"({username})")
+    parts.append(f"(ID: {user.id})")
+    title = " ".join(parts).strip()
+    if len(title) > 128:
+        title = title[:125] + "..."
+    return title
+
+
+async def get_or_create_support_thread(bot: Bot, user: TgUser) -> Tuple[int, bool]:
+    if not SUPPORT_CHAT_ID:
+        raise RuntimeError("SUPPORT_CHAT_ID is not set")
+
+    existing = await get_support_thread_id(user.id)
+    if existing:
+        return existing, False
+
+    topic = await bot.create_forum_topic(
+        chat_id=SUPPORT_CHAT_ID,
+        name=_topic_title(user),
+    )
+    thread_id = int(topic.message_thread_id)
+
+    # сохраняем в БД
+    await bind_support_thread(user.id, thread_id)
+
     return thread_id, True
