@@ -26,10 +26,10 @@ def successful_support_answer_keyboard():
 @router.callback_query(F.data == "support")
 async def support(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
+    # try:
+    #     await callback.message.delete()
+    # except Exception:
+    #     pass
 
     await state.set_state(MainStates.send_supoort_message)
     await callback.message.answer(
