@@ -8,6 +8,8 @@ from typing import Optional, Tuple
 from aiogram import Bot
 from aiogram.types import User as TgUser
 
+SUPPORT_CHAT_ID = -1003326572292
+
 _STORAGE_PATH = Path("support_threads.json")
 _LOCK = asyncio.Lock()
 
