@@ -4,7 +4,6 @@ from aiogram.types import Message, CallbackQuery
 
 from src.keyboards import back_to_main_menu_keyboard
 from src.states import MainStates
-from src.config import settings
 from src.services.support_topics import get_or_create_forum_thread, get_user_id_for_thread
 
 router = Router()
@@ -41,7 +40,7 @@ async def send_support_message(message: Message, state: FSMContext):
     if created_now:
         username = f"@{user.username}" if user.username else "—"
         await bot.send_message(
-            chat_id=settings.SUPPORT_CHAT_ID,
+            chat_id=SUPPORT_CHAT_ID,
             message_thread_id=thread_id,
             text=(
                 "🆕 Создана тема пользователя\n"
@@ -54,19 +53,19 @@ async def send_support_message(message: Message, state: FSMContext):
     # 3) отправляем сообщение пользователя в тему (копируем контент)
     if message.text:
         await bot.send_message(
-            chat_id=settings.SUPPORT_CHAT_ID,
+            chat_id=SUPPORT_CHAT_ID,
             message_thread_id=thread_id,
             text=f"📩 Сообщение:\n{message.text}",
         )
     else:
         # фото/видео/документ/voice/etc — копируем как есть
         await bot.send_message(
-            chat_id=settings.SUPPORT_CHAT_ID,
+            chat_id=SUPPORT_CHAT_ID,
             message_thread_id=thread_id,
             text="📩 Сообщение (вложение):",
         )
         await bot.copy_message(
-            chat_id=settings.SUPPORT_CHAT_ID,
+            chat_id=SUPPORT_CHAT_ID,
             from_chat_id=message.chat.id,
             message_id=message.message_id,
             message_thread_id=thread_id,
