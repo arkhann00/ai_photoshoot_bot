@@ -15,6 +15,7 @@ class MainStates(StatesGroup):
 
     send_supoort_message = State()
     choose_avatar_input = State()
+    cabinet_waiting_avatar = State()
 
 
 class AdminStates(StatesGroup):
