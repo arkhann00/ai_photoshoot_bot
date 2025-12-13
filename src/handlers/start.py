@@ -31,7 +31,7 @@ router = Router()
 ADM_GROUP_ID = -5075627878
 
 # URL мини-аппы/сайта (можно переопределить через settings.WEBAPP_URL)
-WEBAPP_URL: str = "http://62.113.42.113:5173"
+WEBAPP_URL: str = "http://62.113.42.113:5111"
 
 
 async def send_admin_log(bot, text: str) -> None:
