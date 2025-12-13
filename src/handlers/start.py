@@ -10,10 +10,9 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    WebAppInfo,
 )
 
-from sqlalchemy import select, func  # для подсчёта рефералов
+from sqlalchemy import select, func
 
 from src.config import settings
 from src.db import (
@@ -30,15 +29,12 @@ router = Router()
 
 ADM_GROUP_ID = -5075627878
 
-# URL мини-аппы/сайта (можно переопределить через settings.WEBAPP_URL)
-WEBAPP_URL: str = "http://62.113.42.113:5111"
+
+def _get_webapp_url() -> str:
+    return getattr(settings, "WEBAPP_URL", None) or "http://62.113.42.113:5111"
 
 
 async def send_admin_log(bot, text: str) -> None:
-    """
-    Отправка красиво оформленного лога в админский чат.
-    Не роняет бота, если чат недоступен.
-    """
     try:
         await bot.send_message(
             chat_id=ADM_GROUP_ID,
@@ -51,9 +47,6 @@ async def send_admin_log(bot, text: str) -> None:
 
 
 async def get_referrals_count(referrer_telegram_id: int) -> int:
-    """
-    Считает, сколько пользователей в БД имеют referrer_id = referrer_telegram_id.
-    """
     async with async_session() as session:
         result = await session.execute(
             select(func.count()).select_from(User).where(
@@ -64,54 +57,23 @@ async def get_referrals_count(referrer_telegram_id: int) -> int:
 
 
 def get_referral_partner_keyboard() -> InlineKeyboardMarkup:
-    """
-    Кнопки для партнёра-реферала:
-    - запросить вывод средств
-    - перевести на баланс
-    - вернуться в главное меню
-    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="💸 Запросить вывод средств",
-                    callback_data="referral_withdraw_request",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="↔️ Перевести на баланс",
-                    callback_data="referral_transfer_to_balance",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⬅️ Главное меню",
-                    callback_data="back_to_main_menu",
-                )
-            ],
+            [InlineKeyboardButton(text="💸 Запросить вывод средств", callback_data="referral_withdraw_request")],
+            [InlineKeyboardButton(text="↔️ Перевести на баланс", callback_data="referral_transfer_to_balance")],
+            [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_to_main_menu")],
         ]
     )
 
 
-def get_open_webapp_keyboard() -> InlineKeyboardMarkup:
+def get_open_site_keyboard() -> InlineKeyboardMarkup:
     """
-    Кнопка открывает сайт/мини-аппу (каталог стилей) прямо в Telegram.
+    Нужна только для кейсов, когда стиль не найден/выключен и надо отправить юзера на сайт.
     """
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✨ Создать генерацию (каталог)",
-                    web_app=WebAppInfo(url=WEBAPP_URL),
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⬅️ Главное меню",
-                    callback_data="back_to_main_menu",
-                )
-            ],
+            [InlineKeyboardButton(text="🌐 Открыть каталог стилей", url=_get_webapp_url())],
+            [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_to_main_menu")],
         ]
     )
 
@@ -121,10 +83,11 @@ def _parse_start_payload(payload: str) -> tuple[Optional[int], Optional[int]]:
     Возвращает (referrer_id, style_id_for_generation)
 
     Поддержка:
-    - /start 123456789              -> referrer_id
-    - /start gen_12                 -> style_id
-    - /start gen:12                 -> style_id
-    - /start style_12               -> style_id (на всякий случай)
+    - /start 123456789          -> referrer_id
+    - /start webstyle_12        -> style_id
+    - /start gen_12             -> style_id (на всякий случай)
+    - /start gen:12             -> style_id (на всякий случай)
+    - /start style_12           -> style_id (на всякий случай)
     """
     payload = (payload or "").strip()
     if not payload:
@@ -135,7 +98,6 @@ def _parse_start_payload(payload: str) -> tuple[Optional[int], Optional[int]]:
         if rest.isdigit():
             return None, int(rest)
 
-    # генерация из веба
     if payload.startswith("gen_"):
         rest = payload[4:]
         if rest.isdigit():
@@ -151,7 +113,6 @@ def _parse_start_payload(payload: str) -> tuple[Optional[int], Optional[int]]:
         if rest.isdigit():
             return None, int(rest)
 
-    # рефералка (цифры)
     if payload.isdigit():
         return int(payload), None
 
@@ -163,17 +124,12 @@ async def _enter_photoshoot_waiting_photo(
     state: FSMContext,
     style_id: int,
 ) -> None:
-    """
-    Пользователь пришёл из веб-каталога по диплинку /start gen_<style_id>.
-    Ставим стейт на ожидание фото и сохраняем выбранный стиль в FSM,
-    чтобы handle_selfie в photoshoot.py сразу отработал.
-    """
     style = await get_style_prompt_by_id(style_id)
     if style is None or not getattr(style, "is_active", True):
         await state.set_state(MainStates.start)
         await message.answer(
             "Этот стиль не найден или выключен 😔\n\nОткрой каталог и выбери другой стиль.",
-            reply_markup=get_open_webapp_keyboard(),
+            reply_markup=get_open_site_keyboard(),
         )
         return
 
@@ -182,7 +138,7 @@ async def _enter_photoshoot_waiting_photo(
         current_style_id=style.id,
         current_style_title=style.title,
         current_style_prompt=style.prompt,
-        entry_source="webapp_deeplink",
+        entry_source="website_deeplink",
     )
     await state.set_state(MainStates.making_photoshoot_process)
 
@@ -201,7 +157,7 @@ async def _enter_photoshoot_waiting_photo(
     await send_admin_log(
         message.bot,
         (
-            "🌐 <b>Старт генерации из веб-каталога</b>\n"
+            "🌐 <b>Старт генерации с сайта</b>\n"
             f"Пользователь: <code>{message.from_user.id}</code> @{username}\n"
             f"Style ID: <code>{style.id}</code>\n"
             f"Style title: <b>{style.title}</b>"
@@ -213,7 +169,6 @@ async def _enter_photoshoot_waiting_photo(
 async def command_start(message: Message, state: FSMContext):
     bot = message.bot
 
-    # /start <payload>
     payload: Optional[str] = None
     if message.text:
         parts = message.text.split(maxsplit=1)
@@ -222,23 +177,21 @@ async def command_start(message: Message, state: FSMContext):
 
     referrer_telegram_id, style_id_for_generation = _parse_start_payload(payload or "")
 
-    # Не даём юзеру быть своим же реферером
     if referrer_telegram_id == message.from_user.id:
         referrer_telegram_id = None
 
-    # создаём/обновляем пользователя в БД
     user = await get_or_create_user(
         telegram_id=message.from_user.id,
         username=message.from_user.username,
         referrer_telegram_id=referrer_telegram_id,
     )
 
-    # Если пришёл по диплинку генерации — сразу переводим в ожидание фото
+    # Если пришёл с сайта с выбранным стилем — сразу ждём фото
     if style_id_for_generation is not None:
         await _enter_photoshoot_waiting_photo(message, state, style_id_for_generation)
         return
 
-    # Обычный старт
+    # Обычный старт: ТОЛЬКО стартовый текст + стартовая клавиатура
     await state.set_state(MainStates.start)
 
     await message.answer(
@@ -246,14 +199,8 @@ async def command_start(message: Message, state: FSMContext):
 
 Здесь твои снимки обретают новую жизнь — я превращу любую фотографию в стильный, выразительный и по-настоящему уникальный визуальный образ.
 
-Выбирай категорию и смело начинай — создадим что-то впечатляющее 😉""",
+Нажми «Создать фотосессию ✨» и выбери стиль на сайте 😉""",
         reply_markup=get_start_keyboard(),
-    )
-
-    # отдельным сообщением — кнопка на веб-каталог (без правок src/keyboards)
-    await message.answer(
-        "Хочешь выбрать стиль в каталоге мини-аппы?",
-        reply_markup=get_open_webapp_keyboard(),
     )
 
     # Лог в админский чат, если рефералка
@@ -276,43 +223,13 @@ async def command_start(message: Message, state: FSMContext):
         )
 
 
-@router.message(Command("web"))
-async def open_web_catalog_command(message: Message):
-    """
-    /web — вручную открыть мини-аппу/каталог.
-    """
-    await message.answer(
-        "Открываю каталог стилей:",
-        reply_markup=get_open_webapp_keyboard(),
-    )
-
-
-@router.callback_query(F.data == "open_web_catalog")
-async def open_web_catalog_callback(callback: CallbackQuery):
-    """
-    Если вдруг где-то есть callback-кнопка 'open_web_catalog' — покажем web_app кнопку.
-    """
-    await callback.answer()
-    await callback.message.answer(
-        "Открываю каталог стилей:",
-        reply_markup=get_open_webapp_keyboard(),
-    )
-
-
 @router.message(Command("ref"))
 async def referral_link_command(message: Message):
-    """
-    Команда /ref — отдаём реферальную ссылку.
-    Для обычного пользователя — старый текст.
-    Для партнёра-реферала — расширенный блок с количеством рефералов и реферальным балансом.
-    """
     me = await message.bot.get_me()
     bot_username = me.username
 
     if not bot_username:
-        await message.answer(
-            "Не удалось получить username бота. Обратись к администратору."
-        )
+        await message.answer("Не удалось получить username бота. Обратись к администратору.")
         return
 
     link = f"https://t.me/{bot_username}?start={message.from_user.id}"
@@ -341,10 +258,7 @@ async def referral_link_command(message: Message):
         f"Ваш реферальный баланс: <b>{referral_balance} ₽</b>"
     )
 
-    await message.answer(
-        text,
-        reply_markup=get_referral_partner_keyboard(),
-    )
+    await message.answer(text, reply_markup=get_referral_partner_keyboard())
 
 
 @router.callback_query(F.data == "referral_link")
@@ -355,9 +269,7 @@ async def referral_link_button(callback: CallbackQuery):
     bot_username = me.username
 
     if not bot_username:
-        await callback.message.edit_text(
-            "Не удалось получить username бота. Обратись к администратору."
-        )
+        await callback.message.edit_text("Не удалось получить username бота. Обратись к администратору.")
         return
 
     link = f"https://t.me/{bot_username}?start={callback.from_user.id}"
@@ -387,10 +299,7 @@ async def referral_link_button(callback: CallbackQuery):
         f"Ваш реферальный баланс: <b>{referral_balance} ₽</b>"
     )
 
-    await callback.message.edit_text(
-        text,
-        reply_markup=get_referral_partner_keyboard(),
-    )
+    await callback.message.edit_text(text, reply_markup=get_referral_partner_keyboard())
 
 
 @router.callback_query(F.data == "referral_transfer_to_balance")
@@ -404,22 +313,16 @@ async def referral_transfer_to_balance(callback: CallbackQuery):
         user: User | None = result.scalar_one_or_none()
 
         if user is None:
-            await callback.message.answer(
-                "Не удалось найти твой профиль. Обратись к администратору."
-            )
+            await callback.message.answer("Не удалось найти твой профиль. Обратись к администратору.")
             return
 
         if not getattr(user, "is_referral", False):
-            await callback.message.answer(
-                "Эта функция доступна только для реферальных партнёров."
-            )
+            await callback.message.answer("Эта функция доступна только для реферальных партнёров.")
             return
 
         amount = int(getattr(user, "referral_earned_rub", 0) or 0)
         if amount <= 0:
-            await callback.message.answer(
-                "У тебя пока нет средств для перевода на баланс."
-            )
+            await callback.message.answer("У тебя пока нет средств для перевода на баланс.")
             return
 
         user.balance = int(user.balance or 0) + amount
@@ -439,9 +342,7 @@ async def referral_withdraw_request(callback: CallbackQuery):
 
     user = await get_user_by_telegram_id(callback.from_user.id)
     if not getattr(user, "is_referral", False):
-        await callback.message.answer(
-            "Запрос на вывод доступен только для реферальных партнёров."
-        )
+        await callback.message.answer("Запрос на вывод доступен только для реферальных партнёров.")
         return
 
     referrals_count = await get_referrals_count(user.telegram_id)
@@ -470,5 +371,4 @@ async def referral_withdraw_request(callback: CallbackQuery):
 
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.text == "/chat_id")
 async def show_group_id(message: Message):
-    chat_id = message.chat.id
-    await message.answer(f"ID этого чата: {chat_id}")
+    await message.answer(f"ID этого чата: {message.chat.id}")
