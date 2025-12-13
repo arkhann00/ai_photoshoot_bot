@@ -49,7 +49,7 @@ from src.db import (
     get_style_categories_for_gender,
     get_user_by_telegram_id,
     change_user_balance,
-    add_referral_earnings, get_user_avatar,
+    add_referral_earnings, get_user_avatar, set_user_avatar,
 )
 
 router = Router()
@@ -792,11 +792,12 @@ async def _run_generation(
 
         # после УСПЕШНОЙ генерации — обновляем аватар (если нужно)
         if update_avatar_after_success and new_avatar_file_id:
-            await create_user_avatar(
+            await set_user_avatar(
                 telegram_id=user_id,
                 file_id=new_avatar_file_id,
                 source_style_title=f"avatar_after_success:{style_title}",
             )
+
 
     except Exception as e:
         await log_photoshoot(
@@ -997,8 +998,6 @@ async def handle_selfie(message: Message, state: FSMContext):
             )
             await message.answer(text, reply_markup=get_insufficient_balance_keyboard())
             return
-
-    # avatar logic
     avatar_update_mode = data.get("avatar_update_mode")
     current_avatar = await get_user_avatar(message.from_user.id)
 
@@ -1007,7 +1006,7 @@ async def handle_selfie(message: Message, state: FSMContext):
 
     if current_avatar is None:
         # аватара нет -> первое фото становится аватаром СРАЗУ
-        await create_user_avatar(
+        await set_user_avatar(
             telegram_id=message.from_user.id,
             file_id=user_photo_file_id,
             source_style_title=f"avatar_first_upload:{style_title}",
@@ -1086,52 +1085,3 @@ async def back_to_main_menu(callback: CallbackQuery, state: FSMContext):
 async def create_another_photoshoot(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     # await get_album(callback.message, state)
-
-
-@router.callback_query(F.data == "make_avatar")
-async def make_avatar_from_last(callback: CallbackQuery, state: FSMContext):
-    """
-    Делаем аватаром последнее сгенерированное фото.
-    Берём file_id из FSM (last_generated_file_id).
-    """
-    data = await state.get_data()
-    file_id = data.get("last_generated_file_id")
-    style_title = data.get("last_generated_style_title") or data.get("current_style_title")
-
-    if not file_id:
-        await callback.answer(
-            "Не удалось найти последнее сгенерированное фото. "
-            "Сначала сделай фотосессию.",
-            show_alert=True,
-        )
-        return
-
-    # Проверяем лимит аватаров
-    avatars = await get_user_avatars(callback.from_user.id)
-    if len(avatars) >= MAX_AVATARS_PER_USER:
-        await callback.answer(
-            "У тебя уже 3 аватара. Удали один в личном кабинете, чтобы добавить новый.",
-            show_alert=True,
-        )
-        return
-
-    avatar = await create_user_avatar(
-        telegram_id=callback.from_user.id,
-        file_id=file_id,
-        source_style_title=style_title,
-    )
-
-    if avatar is None:
-        # На всякий случай, если что-то пошло не так
-        await callback.answer(
-            "Не удалось сохранить аватар. Попробуй позже.",
-            show_alert=True,
-        )
-        return
-
-    await callback.answer("Аватар сохранён ✅", show_alert=False)
-    await callback.message.answer(
-        f"Супер! Это фото сохранено как твой аватар. "
-        f"Всего аватаров: {len(avatars) + 1}/{MAX_AVATARS_PER_USER}.\n\n"
-        "Посмотреть и удалить аватары можно в разделе «Личный кабинет»."
-    )

@@ -16,7 +16,7 @@ from sqlalchemy import (
     String,
     func,
     select,
-    case,
+    case, delete,
 )
 from sqlalchemy.exc import OperationalError, IntegrityError
 from sqlalchemy.ext.asyncio import (
@@ -997,6 +997,7 @@ async def get_payments_report(days: int = 7) -> dict:
 async def get_user_avatar(telegram_id: int) -> Optional[UserAvatar]:
     """
     Возвращает текущий аватар пользователя (если есть).
+    Берём самый свежий (на всякий случай).
     """
     async with async_session() as session:
         result = await session.execute(
@@ -1007,12 +1008,38 @@ async def get_user_avatar(telegram_id: int) -> Optional[UserAvatar]:
         )
         return result.scalar_one_or_none()
 
+
 async def get_user_avatars(telegram_id: int) -> list[UserAvatar]:
     """
     Совместимость со старым кодом: возвращаем список из 0/1 элементов.
     """
     avatar = await get_user_avatar(telegram_id)
     return [avatar] if avatar else []
+
+async def set_user_avatar(
+    telegram_id: int,
+    file_id: str,
+    source_style_title: Optional[str] = None,
+) -> UserAvatar:
+    """
+    Устанавливает аватар пользователю.
+    Гарантирует, что в таблице останется ровно 1 аватар:
+    удаляем все старые и создаём новый.
+    """
+    async with async_session() as session:
+        await session.execute(
+            delete(UserAvatar).where(UserAvatar.telegram_id == telegram_id)
+        )
+
+        avatar = UserAvatar(
+            telegram_id=telegram_id,
+            file_id=file_id,
+            source_style_title=source_style_title,
+        )
+        session.add(avatar)
+        await session.commit()
+        await session.refresh(avatar)
+        return avatar
 
 
 
@@ -1043,15 +1070,19 @@ async def create_user_avatar(
         return avatar
 
 
-async def delete_user_avatar(telegram_id: int, avatar_id: int = 0) -> bool:
+async def delete_user_avatar(telegram_id: int) -> bool:
     """
-    Совместимость: avatar_id игнорируем (аватар один).
+    Удаляет текущий аватар пользователя (если есть).
     """
     async with async_session() as session:
-        await session.execute(
-            text("DELETE FROM user_avatars WHERE telegram_id = :tg_id"),
-            {"tg_id": telegram_id},
+        result = await session.execute(
+            select(UserAvatar).where(UserAvatar.telegram_id == telegram_id)
         )
+        avatar = result.scalar_one_or_none()
+        if avatar is None:
+            return False
+
+        await session.delete(avatar)
         await session.commit()
         return True
 
