@@ -1135,17 +1135,16 @@ async def get_style_categories_for_gender(gender: StyleGender) -> list[StyleCate
                 StyleCategory.gender == gender,
                 StyleCategory.is_active == True,  # noqa: E712
             )
-            .order_by(StyleCategory.id.asc())
+            .order_by(StyleCategory.sort_order.asc(), StyleCategory.id.asc())
         )
         return list(result.scalars().all())
-
 
 async def get_all_style_categories(include_inactive: bool = False) -> list[StyleCategory]:
     async with async_session() as session:
         stmt = select(StyleCategory)
         if not include_inactive:
             stmt = stmt.where(StyleCategory.is_active == True)  # noqa: E712
-        stmt = stmt.order_by(StyleCategory.id.asc())
+        stmt = stmt.order_by(StyleCategory.sort_order.asc(), StyleCategory.id.asc())
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
@@ -1302,3 +1301,38 @@ async def bind_support_thread(telegram_id: int, thread_id: int) -> None:
         except IntegrityError:
             await session.rollback()
             # кто-то уже записал — ок
+
+async def get_styles_for_category_ids(category_ids: list[int]) -> list[StylePrompt]:
+    if not category_ids:
+        return []
+    async with async_session() as session:
+        stmt = (
+            select(StylePrompt)
+            .where(
+                StylePrompt.is_active == True,  # noqa: E712
+                StylePrompt.category_id.in_(category_ids),
+            )
+            .order_by(StylePrompt.category_id.asc(), StylePrompt.id.asc())
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+
+async def get_styles_for_category_ids_and_gender(
+    category_ids: list[int],
+    gender: StyleGender,
+) -> list[StylePrompt]:
+    if not category_ids:
+        return []
+    async with async_session() as session:
+        stmt = (
+            select(StylePrompt)
+            .where(
+                StylePrompt.is_active == True,  # noqa: E712
+                StylePrompt.category_id.in_(category_ids),
+                StylePrompt.gender == gender,
+            )
+            .order_by(StylePrompt.category_id.asc(), StylePrompt.id.asc())
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())

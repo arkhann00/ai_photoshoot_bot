@@ -8,6 +8,7 @@ import json
 
 from urllib.parse import parse_qsl
 
+from aiogram.methods import Request
 from fastapi import (
     FastAPI,
     HTTPException,
@@ -62,7 +63,7 @@ from src.db import (
     get_admin_users,
     set_user_admin_flag,
     set_user_referral_flag,
-    User,
+    User, get_styles_for_category_ids, get_styles_for_category_ids_and_gender,
 )
 
 # -------------------------------------------------------------------
@@ -78,7 +79,7 @@ app = FastAPI(
 # CORS — пока максимально широкий, потом можно сузить под домен мини-аппы
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://62.113.42.113:5173", "http://localhost:5173"],
+    allow_origins=["http://62.113.42.113:5173", "http://localhost:5173", "http://localhost:5111"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -227,6 +228,12 @@ class AdminUserStats(BaseModel):
 # -------------------------------------------------------------------
 # Разбор и валидация Telegram initData
 # -------------------------------------------------------------------
+
+def _img_url(request: Request, filename: str | None) -> str | None:
+    if not filename:
+        return None
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/static/img/{filename}"
 
 
 def _parse_init_data(init_data: str) -> dict:
@@ -1241,3 +1248,183 @@ async def admin_get_referrals_endpoint(
     # ВРЕМЕННО: просто пустой список, чтобы фронт не получал 404.
     # Когда появится логика рефералок в БД, заполни этот список реальными данными.
     return []
+
+# -------------------------------------------------------------------
+# Категории и стили — публичное API для фронта
+# -------------------------------------------------------------------
+
+@app.get("/api/style-categories", response_model=list[StyleCategoryResponse])
+async def api_style_categories(
+    request: Request,
+    gender: Optional[str] = Query(default=None),
+) -> list[StyleCategoryResponse]:
+    """
+    Категории для фронта.
+    - без gender: все активные категории
+    - gender=male|female: активные категории выбранного пола
+    """
+    if gender is None:
+        categories = await get_all_style_categories(include_inactive=False)
+    else:
+        try:
+            gender_enum = StyleGender(gender)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid gender (use: male/female)")
+        categories = await get_style_categories_for_gender(gender_enum)
+
+    return [
+        StyleCategoryResponse(
+            id=c.id,
+            title=c.title,
+            description=c.description,
+            image_filename=c.image_filename,
+            image_url=_img_url(request, c.image_filename) or "",
+            is_active=c.is_active,
+            gender=c.gender.value,
+        )
+        for c in categories
+    ]
+
+
+@app.get("/api/styles", response_model=list[StyleResponse])
+async def api_styles(
+    request: Request,
+    category_id: int = Query(..., ge=1),
+    gender: str = Query(...),
+) -> list[StyleResponse]:
+    """
+    Стили для категории и пола.
+    GET /api/styles?category_id=1&gender=male
+    """
+    try:
+        gender_enum = StyleGender(gender)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid gender (use: male/female)")
+
+    styles = await get_styles_by_category_and_gender(
+        category_id=category_id,
+        gender=gender_enum,
+    )
+
+    return [
+        StyleResponse(
+            id=s.id,
+            title=s.title,
+            description=s.description,
+            prompt=s.prompt,
+            image_filename=s.image_filename or "",
+            image_url=_img_url(request, s.image_filename),
+            is_active=s.is_active,
+            category_id=s.category_id,
+            gender=s.gender.value,
+        )
+        for s in styles
+    ]
+
+class StyleCategoryWithStylesResponse(StyleCategoryResponse):
+    styles: List[StyleResponse]
+
+
+# class CatalogResponse(BaseModel):
+#     categories: List[StyleCategoryWithStylesResponse]
+
+
+class CatalogStyleResponse(BaseModel):
+    id: int
+    title: str
+    description: str
+    prompt: str
+    image_filename: Optional[str]
+    image_url: str
+    is_active: bool
+    category_id: int
+    gender: str
+
+
+class CatalogCategoryResponse(BaseModel):
+    id: int
+    title: str
+    description: str
+    image_filename: str
+    image_url: str
+    is_active: bool
+    gender: str
+    styles: List[CatalogStyleResponse]
+
+
+class CatalogResponse(BaseModel):
+    gender: str
+    categories: List[CatalogCategoryResponse]
+
+
+
+@app.get("/api/catalog", response_model=CatalogResponse)
+async def api_catalog(
+    gender: str = Query(default="male"),
+) -> CatalogResponse:
+    """
+    Единая ручка для фронта:
+    GET /api/catalog?gender=male|female
+
+    Возвращает:
+    {
+      "gender": "male",
+      "categories": [
+        { ... , "styles": [ ... ] }
+      ]
+    }
+    """
+    try:
+        gender_enum = StyleGender(gender)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid gender. Use male or female")
+
+    categories = await get_style_categories_for_gender(gender_enum)
+
+    result_categories: List[CatalogCategoryResponse] = []
+
+    for c in categories:
+        styles = await get_styles_by_category_and_gender(
+            category_id=c.id,
+            gender=gender_enum,
+        )
+
+        cat_image_url = f"/static/img/{c.image_filename}"
+
+        styles_out: List[CatalogStyleResponse] = []
+        for s in styles:
+            # у стиля image_filename может быть None
+            img = s.image_filename or ""
+            style_image_url = f"/static/img/{img}" if img else ""
+
+            styles_out.append(
+                CatalogStyleResponse(
+                    id=s.id,
+                    title=s.title,
+                    description=s.description,
+                    prompt=s.prompt,
+                    image_filename=s.image_filename,
+                    image_url=style_image_url,
+                    is_active=s.is_active,
+                    category_id=s.category_id,
+                    gender=s.gender.value,
+                )
+            )
+
+        result_categories.append(
+            CatalogCategoryResponse(
+                id=c.id,
+                title=c.title,
+                description=c.description,
+                image_filename=c.image_filename,
+                image_url=cat_image_url,
+                is_active=c.is_active,
+                gender=c.gender.value,
+                styles=styles_out,
+            )
+        )
+
+    return CatalogResponse(
+        gender=gender_enum.value,
+        categories=result_categories,
+    )

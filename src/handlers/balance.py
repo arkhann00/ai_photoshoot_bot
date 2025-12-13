@@ -163,6 +163,116 @@ def get_balance_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
+async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
+    """
+    Специальная быстрая оплата на 49 ₽ для сценария "нехватка средств".
+    Всегда отправляет invoice в ЛС пользователю (bot.send_invoice),
+    чтобы не зависеть от чата/топика, где была нажата кнопка.
+    """
+    bot = callback.bot
+    user_id = callback.from_user.id
+    username = callback.from_user.username or "—"
+
+    pay_amount_rub = 49
+    credit_amount_rub = 49
+
+    prices = [
+        LabeledPrice(
+            label=f"Пополнение баланса на {credit_amount_rub} ₽",
+            amount=pay_amount_rub * 100,
+        )
+    ]
+
+    # Важно: payload должен начинаться с "balance_topup", потому что pre_checkout это проверяет
+    payload = f"balance_topup_quick:{pay_amount_rub}"
+
+    provider_data = build_provider_data(
+        description=f"Пополнение баланса на {credit_amount_rub} ₽",
+        amount_rub=pay_amount_rub,
+    )
+
+    try:
+        # ✅ всегда в личку
+        await bot.send_invoice(
+            chat_id=user_id,
+            title="Пополнение баланса",
+            description=(
+                "Быстрое пополнение баланса.\n"
+                f"Вы платите {pay_amount_rub} ₽, "
+                f"на баланс будет зачислено {credit_amount_rub} ₽."
+            ),
+            provider_token=PAYMENT_PROVIDER_TOKEN,
+            currency="RUB",
+            prices=prices,
+            payload=payload,
+            start_parameter="balance_topup_quick",
+            need_email=True,
+            send_email_to_provider=True,
+            need_phone_number=False,
+            send_phone_number_to_provider=False,
+            need_shipping_address=False,
+            is_flexible=False,
+            max_tip_amount=0,
+            provider_data=provider_data,
+        )
+
+        # Если кнопку нажали не в личке — подскажем, где появилась оплата
+        if callback.message and callback.message.chat.id != user_id:
+            await callback.message.answer("Я отправил оплату тебе в личные сообщения с ботом ✅")
+
+        await send_admin_log(
+            bot,
+            (
+                "⚡️ <b>Quick topup invoice (49 ₽) отправлен</b>\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
+                f"payload: <code>{payload}</code>"
+            ),
+        )
+
+    except TelegramForbiddenError as e:
+        await send_admin_log(
+            bot,
+            (
+                "🔴 <b>Quick topup: Forbidden (бот не может написать в ЛС)</b>\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
+                f"Ошибка: <code>{e}</code>"
+            ),
+        )
+        await callback.message.answer(
+            "Чтобы оплатить, открой бота в личных сообщениях и нажми /start, затем повтори попытку.",
+            reply_markup=get_payment_error_keyboard(),
+        )
+
+    except TelegramBadRequest as e:
+        await send_admin_log(
+            bot,
+            (
+                "🔴 <b>Quick topup: TelegramBadRequest при отправке invoice</b>\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
+                f"Ошибка: <code>{e}</code>\n"
+                f"provider_data: <code>{provider_data}</code>"
+            ),
+        )
+        await callback.message.answer(
+            "Не удалось открыть оплату 😔\nПопробуй ещё раз или выбери другую сумму.",
+            reply_markup=get_payment_error_keyboard(),
+        )
+
+    except Exception as e:
+        await send_admin_log(
+            bot,
+            (
+                "🔴 <b>Quick topup: неизвестная ошибка</b>\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
+                f"Ошибка: <code>{e}</code>"
+            ),
+        )
+        await callback.message.answer(
+            "Не удалось открыть оплату 😔\nПопробуй ещё раз или выбери другую сумму.",
+            reply_markup=get_payment_error_keyboard(),
+        )
+
+
 
 def get_after_success_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(

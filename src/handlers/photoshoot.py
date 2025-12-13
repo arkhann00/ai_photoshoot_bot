@@ -12,6 +12,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
+from src.handlers.balance import send_quick_topup_invoice_49
 from src.paths import IMG_DIR
 from src.states import MainStates
 from src.data.styles import styles, PHOTOSHOOT_PRICE
@@ -711,7 +712,7 @@ def get_insufficient_balance_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="Пополнить на 49 ₽",
-                    callback_data="topup_49",
+                    callback_data="quick_topup_49",
                 )
             ],
             [
@@ -945,6 +946,11 @@ async def handle_selfie(message: Message, state: FSMContext):
         "Что дальше?",
         reply_markup=get_after_photoshoot_keyboard(),
     )
+
+@router.callback_query(F.data == "quick_topup_49")
+async def quick_topup_49_handler(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await send_quick_topup_invoice_49(callback)
 
 
 from aiogram.exceptions import TelegramBadRequest as AiogramTelegramBadRequest
