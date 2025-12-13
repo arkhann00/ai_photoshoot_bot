@@ -112,10 +112,10 @@ def get_balance_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_after_photoshoot_keyboard() -> InlineKeyboardMarkup:
+    web_url = _get_webapp_url()
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Сделать это фото аватаром", callback_data="make_avatar")],
-            [InlineKeyboardButton(text="Создать ещё одну фотосессию", callback_data="make_photo")],
+            [InlineKeyboardButton(text="Создать ещё одну фотосессию", url=web_url)],
             [InlineKeyboardButton(text="Вернуться в главное меню", callback_data="back_to_main_menu")],
         ]
     )
