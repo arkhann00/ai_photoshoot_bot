@@ -20,10 +20,10 @@ from src.db import (
     get_user_by_telegram_id,
     get_style_prompt_by_id,
     async_session,
-    User,
+    User, get_user_avatar,
 )
 from src.states import MainStates
-from src.keyboards import get_start_keyboard, back_to_main_menu_keyboard
+from src.keyboards import get_start_keyboard, back_to_main_menu_keyboard, get_avatar_choice_keyboard
 
 router = Router()
 
@@ -118,7 +118,6 @@ def _parse_start_payload(payload: str) -> tuple[Optional[int], Optional[int]]:
 
     return None, None
 
-
 async def _enter_photoshoot_waiting_photo(
     message: Message,
     state: FSMContext,
@@ -133,6 +132,7 @@ async def _enter_photoshoot_waiting_photo(
         )
         return
 
+    # важно: чистим состояние и кладём текущий стиль
     await state.clear()
     await state.update_data(
         current_style_id=style.id,
@@ -140,18 +140,32 @@ async def _enter_photoshoot_waiting_photo(
         current_style_prompt=style.prompt,
         entry_source="website_deeplink",
     )
-    await state.set_state(MainStates.making_photoshoot_process)
 
-    text = (
-        f"Отлично! Выбран стиль «{style.title}» ✅\n\n"
-        "Теперь пришли своё селфи:\n"
-        "— лицо прямо\n"
-        "— хорошее освещение\n"
-        "— без фильтров и очков\n\n"
-        "Как только пришлёшь фото — генерация начнётся автоматически ✨"
-    )
+    # вместо прямого ожидания фото — показываем выбор аватара
+    avatar = await get_user_avatar(message.from_user.id)
+    await state.set_state(MainStates.choose_avatar_input)
 
-    await message.answer(text, reply_markup=back_to_main_menu_keyboard())
+    if avatar is None:
+        text = (
+            f"Выбран стиль «{style.title}» ✅\n\n"
+            "У тебя пока нет аватара.\n"
+            "Пришли фото — я сохраню его как твой аватар и буду использовать дальше."
+        )
+        await message.answer(
+            text,
+            reply_markup=get_avatar_choice_keyboard(has_avatar=False),
+        )
+    else:
+        text = (
+            f"Выбран стиль «{style.title}» ✅\n\n"
+            "Как будем генерировать?\n"
+            "— использовать твой текущий аватар\n"
+            "— или загрузить новое фото (после генерации оно станет новым аватаром)"
+        )
+        await message.answer(
+            text,
+            reply_markup=get_avatar_choice_keyboard(has_avatar=True),
+        )
 
     username = message.from_user.username or "—"
     await send_admin_log(
@@ -160,7 +174,8 @@ async def _enter_photoshoot_waiting_photo(
             "🌐 <b>Старт генерации с сайта</b>\n"
             f"Пользователь: <code>{message.from_user.id}</code> @{username}\n"
             f"Style ID: <code>{style.id}</code>\n"
-            f"Style title: <b>{style.title}</b>"
+            f"Style title: <b>{style.title}</b>\n"
+            f"Аватар: {'есть' if avatar is not None else 'нет'}"
         ),
     )
 
