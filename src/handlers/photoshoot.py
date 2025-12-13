@@ -1,4 +1,5 @@
 # src/handlers/photoshoot.py
+from typing import Optional
 
 from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest
@@ -27,7 +28,7 @@ from src.keyboards import (
     get_gender_keyboard,
     get_categories_keyboard,
     get_categories_carousel_keyboard,
-    get_error_generating_keyboard,
+    get_error_generating_keyboard, get_avatar_choice_keyboard,
 )
 from src.services.photoshoot import generate_photoshoot_image, logger
 from src.services.admins import is_admin
@@ -48,7 +49,7 @@ from src.db import (
     get_style_categories_for_gender,
     get_user_by_telegram_id,
     change_user_balance,
-    add_referral_earnings,
+    add_referral_earnings, get_user_avatar,
 )
 
 router = Router()
@@ -648,7 +649,6 @@ async def previous_style(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer()
 
-
 @router.callback_query(F.data == "make_photoshoot")
 async def make_photoshoot(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
@@ -659,28 +659,32 @@ async def make_photoshoot(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Не удалось определить текущий стиль.")
         return
 
-    await state.set_state(MainStates.making_photoshoot_process)
+    avatar = await get_user_avatar(callback.from_user.id)
 
-    back_inline_button = InlineKeyboardButton(
-        text="« Назад к стилям",
-        callback_data="back_to_categories",
-    )
-    inline_keyboard_markup = InlineKeyboardMarkup(
-        inline_keyboard=[[back_inline_button]]
-    )
-
-    text = (
-        f"Отлично! Выбран стиль «{style_title}»\n\n"
-        "Теперь пришли своё селфи:\n"
-        "— лицо прямо,\n"
-        "— хорошее освещение,\n"
-        "— без фильтров и очков.\n\n"
-        "Чем лучше фото — тем круче получится результат ✨"
-    )
-
+    await state.set_state(MainStates.choose_avatar_input)
     await callback.answer()
-    await callback.message.answer(text, reply_markup=inline_keyboard_markup)
 
+    if avatar is None:
+        text = (
+            f"Выбран стиль «{style_title}» ✅\n\n"
+            "У тебя пока нет аватара.\n"
+            "Пришли фото — я сохраню его как твой аватар и буду использовать дальше."
+        )
+        await callback.message.answer(
+            text,
+            reply_markup=get_avatar_choice_keyboard(has_avatar=False),
+        )
+    else:
+        text = (
+            f"Выбран стиль «{style_title}» ✅\n\n"
+            "Как будем генерировать?\n"
+            "— использовать твой текущий аватар\n"
+            "— или загрузить новое фото (после генерации оно станет новым аватаром)"
+        )
+        await callback.message.answer(
+            text,
+            reply_markup=get_avatar_choice_keyboard(has_avatar=True),
+        )
 
 @router.callback_query(F.data == "back_to_album")
 async def back_to_album(callback: CallbackQuery, state: FSMContext):
@@ -730,183 +734,87 @@ def get_insufficient_balance_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
-
-@router.message(MainStates.making_photoshoot_process, F.photo)
-async def handle_selfie(message: Message, state: FSMContext):
-    data = await state.get_data()
-    style_title = data.get("current_style_title", "выбранный стиль")
-    style_prompt = data.get("current_style_prompt")
-
-    # Если генерация уже идёт — не запускаем ещё одну
-    if data.get("is_generating"):
-        await message.answer(
-            "Я уже готовлю твою фотосессию по этому запросу 🙌\n"
-            "Дождись, пожалуйста, результата."
-        )
-        return
-
-    user_photo = message.photo[-1]
-    user_photo_file_id = user_photo.file_id
-
-    await state.update_data(
-        user_photo_file_id=user_photo_file_id,
-        is_generating=True,
-    )
-
-    # Проверяем, админ ли пользователь
-    user_is_admin = await is_admin(message.from_user.id)
-
-    # 1. Пытаемся списать кредит или деньги с баланса из БД (ТОЛЬКО для не-админов)
-    if not user_is_admin:
-        can_pay = await consume_photoshoot_credit_or_balance(
-            telegram_id=message.from_user.id,
-            price_rub=PHOTOSHOOT_PRICE,
-        )
-
-        # 2. Если баланс / кредиты не хватает — показываем экран из макета
-        if not can_pay:
-            await state.update_data(is_generating=False)
-            await state.set_state(MainStates.making_photoshoot_failed)
-            text = (
-                "Недостаточно средств на балансе.\n"
-                f"Стоимость одной фотосессии — <b>{PHOTOSHOOT_PRICE} ₽</b>.\n\n"
-                "Пополнить баланс прямо сейчас?"
-            )
-            await message.answer(
-                text,
-                reply_markup=get_insufficient_balance_keyboard(),
-            )
-
-            username = message.from_user.username or "—"
-            await send_admin_log(
-                message.bot,
-                (
-                    "⚠️ <b>Попытка генерации без средств</b>\n"
-                    f"Пользователь: <code>{message.from_user.id}</code> @{username}\n"
-                    f"Текущий стиль: {style_title}\n"
-                    f"Цена фотосессии: {PHOTOSHOOT_PRICE} ₽"
-                ),
-            )
-            return
-
-    # 3. Баланс ок (или пользователь админ), запускаем генерацию
+async def _run_generation(
+    *,
+    bot: Bot,
+    chat_id: int,
+    user_id: int,
+    username: str,
+    state: FSMContext,
+    style_title: str,
+    style_prompt: str,
+    input_photo_file_id: str,
+    user_is_admin: bool,
+    log_cost_rub: int,
+    update_avatar_after_success: bool,
+    new_avatar_file_id: Optional[str],
+) -> None:
     await state.set_state(MainStates.making_photoshoot_success)
 
-    await message.answer(
-        f"Готовлю твою фотосессию в стиле «{style_title}»… ⏳\n"
-        "Обычно это занимает 15–30 секунд.",
+    await bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"Готовлю твою фотосессию в стиле «{style_title}»… ⏳\n"
+            "Обычно это занимает 15–30 секунд."
+        ),
     )
 
-    await message.bot.send_chat_action(
-        chat_id=message.chat.id,
-        action="upload_photo",
-    )
-
-    # для логов: админ = 0 рублей, обычный пользователь = PHOTOSHOOT_PRICE
-    log_cost_rub = 0 if user_is_admin else PHOTOSHOOT_PRICE
+    await bot.send_chat_action(chat_id=chat_id, action="upload_photo")
 
     try:
         generated_photo = await generate_photoshoot_image(
             style_title=style_title,
             style_prompt=style_prompt,
-            user_photo_file_ids=user_photo_file_id,
-            bot=message.bot,
+            user_photo_file_ids=input_photo_file_id,
+            bot=bot,
         )
 
-        # Логируем успешную фотосессию
         await log_photoshoot(
-            telegram_id=message.from_user.id,
+            telegram_id=user_id,
             style_title=style_title,
             status=PhotoshootStatus.success,
             cost_rub=log_cost_rub,
             cost_credits=0,
             provider="comet_gemini_2_5_flash",
+            input_photos_count=1,
         )
 
-        username = message.from_user.username or "—"
         await send_admin_log(
-            message.bot,
+            bot,
             (
                 "🟢 <b>Успешная генерация фотосессии</b>\n"
-                f"Пользователь: <code>{message.from_user.id}</code> @{username}\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
                 f"Стиль: {style_title}\n"
                 f"Списано: {log_cost_rub} ₽\n"
                 f"Админ: {'да' if user_is_admin else 'нет'}"
             ),
         )
 
-        # ==== Реферальный бонус 5 ₽ рефереру ====
-        try:
-            user = await get_user_by_telegram_id(message.from_user.id)
-            referrer_id = getattr(user, "referrer_id", None)
-
-            if (
-                referrer_id is not None
-                and referrer_id != message.from_user.id
-                and not user_is_admin
-            ):
-                referrer = await get_user_by_telegram_id(referrer_id)
-                referrer_username = referrer.username or "—"
-                bonus_rub = 5
-
-                # Если реферер НЕ помечен как партнёр (is_referral == False):
-                # начисляем и баланс, и статистику заработка.
-                if not getattr(referrer, "is_referral", False):
-                    await change_user_balance(referrer_id, bonus_rub)
-                    await add_referral_earnings(referrer_id, bonus_rub)
-
-                    await send_admin_log(
-                        message.bot,
-                        (
-                            "💰 <b>Реферальный бонус за фотосессию</b>\n"
-                            f"Реферер: <code>{referrer_id}</code> @{referrer_username}\n"
-                            f"Новый пользователь: <code>{message.from_user.id}</code> @{username}\n"
-                            f"Начислено: {bonus_rub} ₽ на баланс и в referral_earned_rub"
-                        ),
-                    )
-                else:
-                    # Если реферер — партнёр (is_referral == True):
-                    # баланс НЕ меняем, учитываем только заработок.
-                    await add_referral_earnings(referrer_id, bonus_rub)
-
-                    await send_admin_log(
-                        message.bot,
-                        (
-                            "🤝 <b>Реферальный заработок партнёра</b>\n"
-                            f"Партнёр (реферер): <code>{referrer_id}</code> @{referrer_username}\n"
-                            f"Новый пользователь: <code>{message.from_user.id}</code> @{username}\n"
-                            f"Учтено: {bonus_rub} ₽ в referral_earned_rub (баланс не изменён)"
-                        ),
-                    )
-        except Exception as ref_err:
-            logger.error("Не удалось обработать реферальный бонус: %s", ref_err)
-            await send_admin_log(
-                message.bot,
-                (
-                    "🔴 <b>Ошибка начисления реферального бонуса</b>\n"
-                    f"Пользователь: <code>{message.from_user.id}</code>\n"
-                    f"Ошибка: <code>{ref_err}</code>"
-                ),
+        # после УСПЕШНОЙ генерации — обновляем аватар (если нужно)
+        if update_avatar_after_success and new_avatar_file_id:
+            await create_user_avatar(
+                telegram_id=user_id,
+                file_id=new_avatar_file_id,
+                source_style_title=f"avatar_after_success:{style_title}",
             )
 
     except Exception as e:
-        # Логируем неудачу
         await log_photoshoot(
-            telegram_id=message.from_user.id,
+            telegram_id=user_id,
             style_title=style_title,
             status=PhotoshootStatus.failed,
             cost_rub=log_cost_rub,
             cost_credits=0,
             provider="comet_gemini_2_5_flash",
             error_message=str(e),
+            input_photos_count=1,
         )
 
-        username = message.from_user.username or "—"
         await send_admin_log(
-            message.bot,
+            bot,
             (
                 "🔴 <b>Ошибка генерации фотосессии</b>\n"
-                f"Пользователь: <code>{message.from_user.id}</code> @{username}\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
                 f"Стиль: {style_title}\n"
                 f"Стоимость: {log_cost_rub} ₽\n"
                 f"Ошибка: <code>{e}</code>"
@@ -915,37 +823,219 @@ async def handle_selfie(message: Message, state: FSMContext):
 
         await state.update_data(is_generating=False)
         await state.set_state(MainStates.making_photoshoot_failed)
-        await message.answer(
-            "Упс… Что-то пошло не так при генерации фото 😔\n"
-            "Сервис обработки временно недоступен.\n"
-            "Попробуй, пожалуйста, ещё раз чуть позже.",
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "Упс… Что-то пошло не так при генерации фото 😔\n"
+                "Сервис обработки временно недоступен.\n"
+                "Попробуй, пожалуйста, ещё раз чуть позже."
+            ),
             reply_markup=get_error_generating_keyboard(),
         )
         return
 
-    # 4. Отправляем результат и сохраняем file_id последнего фото в state
-    photo_msg = await message.answer_photo(
-        photo=generated_photo,
-    )
+    # отправка результата
+    photo_msg = await bot.send_photo(chat_id=chat_id, photo=generated_photo)
 
     photo_file_id = photo_msg.photo[-1].file_id
     await state.update_data(
         last_generated_file_id=photo_file_id,
         last_generated_style_title=style_title,
+        is_generating=False,
+        avatar_update_mode=None,
     )
 
-    # 4.2. Потом тем же файлом отправляем документ 4K
-    await message.answer_document(
+    await bot.send_document(
+        chat_id=chat_id,
         document=generated_photo,
         caption="Готово! Вот твоё фото ✨",
     )
 
-    await state.update_data(is_generating=False)
-
-    await message.answer(
-        "Что дальше?",
+    await bot.send_message(
+        chat_id=chat_id,
+        text="Что дальше?",
         reply_markup=get_after_photoshoot_keyboard(),
     )
+
+
+@router.callback_query(F.data == "upload_new_photo")
+async def upload_new_photo(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    style_title = data.get("current_style_title")
+    style_prompt = data.get("current_style_prompt")
+
+    if not style_title or not style_prompt:
+        await callback.answer("Не удалось определить стиль.")
+        return
+
+    avatar = await get_user_avatar(callback.from_user.id)
+
+    # если аватар есть — будем менять его ПОСЛЕ успешной генерации
+    if avatar is not None:
+        await state.update_data(avatar_update_mode="replace_after_success")
+        text = (
+            f"Ок! Стиль «{style_title}» ✅\n\n"
+            "Пришли новое фото.\n"
+            "Я сгенерирую результат и после успешной генерации это фото станет твоим новым аватаром ✨"
+        )
+    else:
+        # аватара нет — первое загруженное фото становится аватаром
+        await state.update_data(avatar_update_mode="set_if_missing")
+        text = (
+            f"Ок! Стиль «{style_title}» ✅\n\n"
+            "Пришли фото — я сохраню его как твой аватар и использую для генераций."
+        )
+
+    await state.set_state(MainStates.making_photoshoot_process)
+    await callback.answer()
+    await callback.message.answer(text, reply_markup=back_to_main_menu_keyboard())
+
+
+@router.callback_query(F.data == "use_avatar")
+async def use_avatar(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    style_title = data.get("current_style_title")
+    style_prompt = data.get("current_style_prompt")
+
+    if not style_title or not style_prompt:
+        await callback.answer("Не удалось определить стиль.")
+        return
+
+    if data.get("is_generating"):
+        await callback.answer("Генерация уже идёт, подожди 🙌", show_alert=True)
+        return
+
+    avatar = await get_user_avatar(callback.from_user.id)
+    if avatar is None:
+        await callback.answer("У тебя ещё нет аватара. Загрузи фото.", show_alert=True)
+        await callback.message.answer(
+            "Пришли фото — оно станет твоим аватаром.",
+            reply_markup=get_avatar_choice_keyboard(has_avatar=False),
+        )
+        return
+
+    await state.update_data(is_generating=True)
+
+    user_is_admin = await is_admin(callback.from_user.id)
+
+    if not user_is_admin:
+        can_pay = await consume_photoshoot_credit_or_balance(
+            telegram_id=callback.from_user.id,
+            price_rub=PHOTOSHOOT_PRICE,
+        )
+        if not can_pay:
+            await state.update_data(is_generating=False)
+            await state.set_state(MainStates.making_photoshoot_failed)
+            text = (
+                "Недостаточно средств на балансе.\n"
+                f"Стоимость одной фотосессии — <b>{PHOTOSHOOT_PRICE} ₽</b>.\n\n"
+                "Пополнить баланс прямо сейчас?"
+            )
+            await callback.message.answer(text, reply_markup=get_insufficient_balance_keyboard())
+            await callback.answer()
+            return
+
+    log_cost_rub = 0 if user_is_admin else PHOTOSHOOT_PRICE
+    username = callback.from_user.username or "—"
+
+    await callback.answer()
+
+    await _run_generation(
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+        user_id=callback.from_user.id,
+        username=username,
+        state=state,
+        style_title=style_title,
+        style_prompt=style_prompt,
+        input_photo_file_id=avatar.file_id,
+        user_is_admin=user_is_admin,
+        log_cost_rub=log_cost_rub,
+        update_avatar_after_success=False,
+        new_avatar_file_id=None,
+    )
+
+
+@router.message(MainStates.making_photoshoot_process, F.photo)
+async def handle_selfie(message: Message, state: FSMContext):
+    data = await state.get_data()
+    style_title = data.get("current_style_title", "выбранный стиль")
+    style_prompt = data.get("current_style_prompt")
+
+    if not style_prompt:
+        await message.answer("Не найден prompt стиля. Открой каталог и выбери стиль заново 🙏")
+        return
+
+    if data.get("is_generating"):
+        await message.answer(
+            "Я уже готовлю твою фотосессию по этому запросу 🙌\n"
+            "Дождись, пожалуйста, результата."
+        )
+        return
+
+    user_photo_file_id = message.photo[-1].file_id
+
+    await state.update_data(
+        user_photo_file_id=user_photo_file_id,
+        is_generating=True,
+    )
+
+    user_is_admin = await is_admin(message.from_user.id)
+
+    if not user_is_admin:
+        can_pay = await consume_photoshoot_credit_or_balance(
+            telegram_id=message.from_user.id,
+            price_rub=PHOTOSHOOT_PRICE,
+        )
+        if not can_pay:
+            await state.update_data(is_generating=False)
+            await state.set_state(MainStates.making_photoshoot_failed)
+            text = (
+                "Недостаточно средств на балансе.\n"
+                f"Стоимость одной фотосессии — <b>{PHOTOSHOOT_PRICE} ₽</b>.\n\n"
+                "Пополнить баланс прямо сейчас?"
+            )
+            await message.answer(text, reply_markup=get_insufficient_balance_keyboard())
+            return
+
+    # avatar logic
+    avatar_update_mode = data.get("avatar_update_mode")
+    current_avatar = await get_user_avatar(message.from_user.id)
+
+    update_avatar_after_success = False
+    new_avatar_file_id: Optional[str] = None
+
+    if current_avatar is None:
+        # аватара нет -> первое фото становится аватаром СРАЗУ
+        await create_user_avatar(
+            telegram_id=message.from_user.id,
+            file_id=user_photo_file_id,
+            source_style_title=f"avatar_first_upload:{style_title}",
+        )
+    else:
+        # аватар есть -> меняем только если пользователь выбрал "загрузить новое фото"
+        if avatar_update_mode == "replace_after_success":
+            update_avatar_after_success = True
+            new_avatar_file_id = user_photo_file_id
+
+    log_cost_rub = 0 if user_is_admin else PHOTOSHOOT_PRICE
+    username = message.from_user.username or "—"
+
+    await _run_generation(
+        bot=message.bot,
+        chat_id=message.chat.id,
+        user_id=message.from_user.id,
+        username=username,
+        state=state,
+        style_title=style_title,
+        style_prompt=style_prompt,
+        input_photo_file_id=user_photo_file_id,
+        user_is_admin=user_is_admin,
+        log_cost_rub=log_cost_rub,
+        update_avatar_after_success=update_avatar_after_success,
+        new_avatar_file_id=new_avatar_file_id,
+    )
+
 
 @router.callback_query(F.data == "quick_topup_49")
 async def quick_topup_49_handler(callback: CallbackQuery) -> None:

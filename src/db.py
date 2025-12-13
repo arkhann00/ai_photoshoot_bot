@@ -208,7 +208,7 @@ class PhotoshootLog(Base):
     )
 
 
-MAX_AVATARS_PER_USER = 3
+MAX_AVATARS_PER_USER = 1
 
 
 class UserAvatar(Base):
@@ -994,14 +994,26 @@ async def get_payments_report(days: int = 7) -> dict:
 # -------------------------------------------------------------------
 
 
-async def get_user_avatars(telegram_id: int) -> list[UserAvatar]:
+async def get_user_avatar(telegram_id: int) -> Optional[UserAvatar]:
+    """
+    Возвращает текущий аватар пользователя (если есть).
+    """
     async with async_session() as session:
         result = await session.execute(
             select(UserAvatar)
             .where(UserAvatar.telegram_id == telegram_id)
-            .order_by(UserAvatar.created_at.asc())
+            .order_by(UserAvatar.created_at.desc())
+            .limit(1)
         )
-        return list(result.scalars().all())
+        return result.scalar_one_or_none()
+
+async def get_user_avatars(telegram_id: int) -> list[UserAvatar]:
+    """
+    Совместимость со старым кодом: возвращаем список из 0/1 элементов.
+    """
+    avatar = await get_user_avatar(telegram_id)
+    return [avatar] if avatar else []
+
 
 
 async def create_user_avatar(
@@ -1009,14 +1021,16 @@ async def create_user_avatar(
     file_id: str,
     source_style_title: Optional[str] = None,
 ) -> Optional[UserAvatar]:
+    """
+    Совместимость со старым названием:
+    теперь это UPSERT — удаляем старый аватар и сохраняем новый.
+    """
     async with async_session() as session:
-        count = await session.scalar(
-            select(func.count()).select_from(UserAvatar).where(
-                UserAvatar.telegram_id == telegram_id
-            )
+        # удаляем все старые аватары пользователя
+        await session.execute(
+            text("DELETE FROM user_avatars WHERE telegram_id = :tg_id"),
+            {"tg_id": telegram_id},
         )
-        if (count or 0) >= MAX_AVATARS_PER_USER:
-            return None
 
         avatar = UserAvatar(
             telegram_id=telegram_id,
@@ -1029,19 +1043,15 @@ async def create_user_avatar(
         return avatar
 
 
-async def delete_user_avatar(telegram_id: int, avatar_id: int) -> bool:
+async def delete_user_avatar(telegram_id: int, avatar_id: int = 0) -> bool:
+    """
+    Совместимость: avatar_id игнорируем (аватар один).
+    """
     async with async_session() as session:
-        result = await session.execute(
-            select(UserAvatar).where(
-                UserAvatar.id == avatar_id,
-                UserAvatar.telegram_id == telegram_id,
-            )
+        await session.execute(
+            text("DELETE FROM user_avatars WHERE telegram_id = :tg_id"),
+            {"tg_id": telegram_id},
         )
-        avatar = result.scalar_one_or_none()
-        if avatar is None:
-            return False
-
-        await session.delete(avatar)
         await session.commit()
         return True
 

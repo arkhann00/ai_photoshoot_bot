@@ -171,3 +171,36 @@ def get_categories_keyboard(categories: list[StyleCategory]) -> InlineKeyboardMa
     rows.append([InlineKeyboardButton(text="« Назад", callback_data="make_photo")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def get_avatar_choice_keyboard(has_avatar: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if has_avatar:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="✅ Использовать аватар",
+                    callback_data="use_avatar",
+                )
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="📷 Загрузить новое фото",
+                callback_data="upload_new_photo",
+            )
+        ]
+    )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="« Назад к стилям",
+                callback_data="back_to_categories",
+            )
+        ]
+    )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)

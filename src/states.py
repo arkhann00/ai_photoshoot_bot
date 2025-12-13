@@ -14,6 +14,7 @@ class MainStates(StatesGroup):
     making_photoshoot_success = State()
 
     send_supoort_message = State()
+    choose_avatar_input = State()
 
 
 class AdminStates(StatesGroup):
