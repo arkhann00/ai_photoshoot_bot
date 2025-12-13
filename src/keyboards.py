@@ -4,7 +4,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
     InlineKeyboardMarkup,
-    InlineKeyboardButton,
+    InlineKeyboardButton, WebAppInfo,
 )
 
 from src.config import settings
@@ -13,7 +13,7 @@ from src.db import StyleCategory
 
 def _get_webapp_url() -> str:
     # берём из settings, если есть, иначе дефолт
-    return getattr(settings, "WEBAPP_URL", None) or "http://62.113.42.113:5111"
+    return getattr(settings, "WEBAPP_URL", None) or "https://aiphotostudio.ru/"
 
 
 def get_start_keyboard() -> InlineKeyboardMarkup:
@@ -29,7 +29,7 @@ def get_start_keyboard() -> InlineKeyboardMarkup:
 
     make_photoshoot_button = InlineKeyboardButton(
         text="Создать фотосессию ✨",
-        url=web_url,  # ВАЖНО: обычный переход на сайт, НЕ WebAppInfo
+        web_app=WebAppInfo(url=web_url),  # ВАЖНО: обычный переход на сайт, НЕ WebAppInfo
     )
     balance_button = InlineKeyboardButton(
         text="Баланс",
@@ -115,7 +115,7 @@ def get_after_photoshoot_keyboard() -> InlineKeyboardMarkup:
     web_url = _get_webapp_url()
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Создать ещё одну фотосессию", url=web_url)],
+            [InlineKeyboardButton(text="Создать ещё одну фотосессию", web_app=WebAppInfo(url=web_url))],
             [InlineKeyboardButton(text="Вернуться в главное меню", callback_data="back_to_main_menu")],
         ]
     )

@@ -36,7 +36,7 @@ ADM_GROUP_ID = -5075627878
 
 
 def _get_webapp_url() -> str:
-    return getattr(settings, "WEBAPP_URL", None) or "http://62.113.42.113:5111"
+    return getattr(settings, "WEBAPP_URL", None) or "https://aiphotostudio.ru/"
 
 
 async def send_admin_log(bot, text: str) -> None:
