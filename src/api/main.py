@@ -79,7 +79,7 @@ app = FastAPI(
 # CORS — пока максимально широкий, потом можно сузить под домен мини-аппы
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://62.113.42.113:5173", "http://localhost:5173", "http://62.113.42.113:5111", "https://aiphotostudio.ru"],
+    allow_origins=["http://62.113.42.113:5173", "http://localhost:5173", "https://aiphotostudio.ru", "https://www.aiphotostudio.ru"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
