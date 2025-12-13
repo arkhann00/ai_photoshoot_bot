@@ -20,10 +20,15 @@ from src.db import (
     get_user_by_telegram_id,
     get_style_prompt_by_id,
     async_session,
-    User, get_user_avatar,
+    User,
+    get_user_avatar,
 )
 from src.states import MainStates
-from src.keyboards import get_start_keyboard, back_to_main_menu_keyboard, get_avatar_choice_keyboard
+from src.keyboards import (
+    get_start_keyboard,
+    back_to_main_menu_keyboard,
+    get_avatar_choice_keyboard,
+)
 
 router = Router()
 
@@ -118,6 +123,32 @@ def _parse_start_payload(payload: str) -> tuple[Optional[int], Optional[int]]:
 
     return None, None
 
+
+async def _send_avatar_choice_prompt(
+    message: Message,
+    *,
+    avatar,
+    text: str,
+    keyboard: InlineKeyboardMarkup,
+) -> None:
+    """
+    Если аватар существует — отправляем его как фото с caption + кнопками.
+    Если аватара нет — отправляем обычный текст с кнопками.
+    """
+    if avatar is not None and getattr(avatar, "file_id", None):
+        await message.answer_photo(
+            photo=avatar.file_id,
+            caption=text,
+            reply_markup=keyboard,
+        )
+        return
+
+    await message.answer(
+        text,
+        reply_markup=keyboard,
+    )
+
+
 async def _enter_photoshoot_waiting_photo(
     message: Message,
     state: FSMContext,
@@ -151,9 +182,12 @@ async def _enter_photoshoot_waiting_photo(
             "У тебя пока нет аватара.\n"
             "Пришли фото — я сохраню его как твой аватар и буду использовать дальше."
         )
-        await message.answer(
-            text,
-            reply_markup=get_avatar_choice_keyboard(has_avatar=False),
+        keyboard = get_avatar_choice_keyboard(has_avatar=False)
+        await _send_avatar_choice_prompt(
+            message,
+            avatar=None,
+            text=text,
+            keyboard=keyboard,
         )
     else:
         text = (
@@ -162,9 +196,12 @@ async def _enter_photoshoot_waiting_photo(
             "— использовать твой текущий аватар\n"
             "— или загрузить новое фото (после генерации оно станет новым аватаром)"
         )
-        await message.answer(
-            text,
-            reply_markup=get_avatar_choice_keyboard(has_avatar=True),
+        keyboard = get_avatar_choice_keyboard(has_avatar=True)
+        await _send_avatar_choice_prompt(
+            message,
+            avatar=avatar,
+            text=text,
+            keyboard=keyboard,
         )
 
     username = message.from_user.username or "—"
@@ -201,7 +238,7 @@ async def command_start(message: Message, state: FSMContext):
         referrer_telegram_id=referrer_telegram_id,
     )
 
-    # Если пришёл с сайта с выбранным стилем — сразу ждём фото
+    # Если пришёл с сайта с выбранным стилем — показываем выбор аватара/фото
     if style_id_for_generation is not None:
         await _enter_photoshoot_waiting_photo(message, state, style_id_for_generation)
         return
