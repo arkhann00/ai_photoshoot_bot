@@ -198,7 +198,7 @@ def get_avatar_choice_keyboard(has_avatar: bool) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(
                 text="« Назад к стилям",
-                callback_data="back_to_categories",
+                callback_data="back_to_main_menu",
             )
         ]
     )
