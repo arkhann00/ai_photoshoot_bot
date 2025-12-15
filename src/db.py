@@ -1073,19 +1073,17 @@ async def create_user_avatar(
 
 async def delete_user_avatar(telegram_id: int) -> bool:
     """
-    Удаляет текущий аватар пользователя (если есть).
+    Удаляет аватар(ы) пользователя.
+    Надёжно даже если по ошибке в таблице несколько строк на одного пользователя.
     """
     async with async_session() as session:
-        result = await session.execute(
-            select(UserAvatar).where(UserAvatar.telegram_id == telegram_id)
+        res = await session.execute(
+            delete(UserAvatar).where(UserAvatar.telegram_id == telegram_id)
         )
-        avatar = result.scalar_one_or_none()
-        if avatar is None:
-            return False
-
-        await session.delete(avatar)
         await session.commit()
-        return True
+
+        # rowcount обычно число удалённых строк
+        return bool(res.rowcount and res.rowcount > 0)
 
 
 # -------------------------------------------------------------------

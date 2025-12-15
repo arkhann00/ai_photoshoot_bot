@@ -195,7 +195,6 @@ async def cabinet_waiting_avatar_not_photo(message: Message):
         reply_markup=back_to_main_menu_keyboard(),
     )
 
-
 @router.callback_query(F.data == "cabinet_delete_avatar")
 async def cabinet_delete_avatar(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -204,8 +203,7 @@ async def cabinet_delete_avatar(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer()
 
-    # у тебя delete_user_avatar теперь игнорирует avatar_id и удаляет всё по telegram_id
-    ok = await delete_user_avatar(user_id, avatar_id=0)
+    ok = await delete_user_avatar(user_id)  # ← ВАЖНО: без avatar_id
     await state.clear()
 
     if not ok:
