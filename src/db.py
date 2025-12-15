@@ -238,208 +238,209 @@ async def run_manual_migrations() -> None:
     Ручные ALTER TABLE для уже существующей БД.
     На свежей БД (после create_all) они спокойно проигнорируются.
     """
-    async with engine.begin() as conn:
-        # --- input_photos_count в photoshoot_logs ---
-        try:
-            await conn.execute(
-                text(
-                    "ALTER TABLE photoshoot_logs "
-                    "ADD COLUMN input_photos_count INTEGER DEFAULT 1"
-                )
-            )
-        except OperationalError as e:
-            msg = str(e)
-            # SQLite / Postgres / прочие варианты «колонка уже есть» или «таблицы нет»
-            if (
-                "no such table: photoshoot_logs" in msg
-                or "duplicate column name: input_photos_count" in msg
-                or 'column "input_photos_count" of relation "photoshoot_logs" already exists' in msg
-            ):
-                # таблица ещё не создана или колонка уже добавлена — игнорируем
-                pass
-            else:
-                raise
-
-        # --- новый флаг is_referral в таблице users ---
-        try:
-            await conn.execute(
-                text(
-                    "ALTER TABLE users "
-                    "ADD COLUMN is_referral BOOLEAN DEFAULT 0"
-                )
-            )
-        except OperationalError as e:
-            msg = str(e)
-            if (
-                "no such table: users" in msg
-                or "duplicate column name: is_referral" in msg
-                or 'column "is_referral" of relation "users" already exists' in msg
-            ):
-                # таблицы нет или колонка уже есть — игнорируем
-                pass
-            else:
-                raise
-
-        # --- поле referral_earned_rub в таблице users ---
-        try:
-            await conn.execute(
-                text(
-                    "ALTER TABLE users "
-                    "ADD COLUMN referral_earned_rub INTEGER DEFAULT 0"
-                )
-            )
-        except OperationalError as e:
-            msg = str(e)
-            if (
-                "no such table: users" in msg
-                or "duplicate column name: referral_earned_rub" in msg
-                or 'column "referral_earned_rub" of relation "users" already exists' in msg
-            ):
-                # таблицы нет или колонка уже есть — игнорируем
-                pass
-            else:
-                raise
-
-        # --- миграция: убрать UNIQUE(title) для style_categories и style_prompts в SQLite ---
-        # На других СУБД (Postgres и т.п.) это место можно доработать отдельно при необходимости.
-        dialect_name = conn.dialect.name
-
-        if dialect_name == "sqlite":
-            # 1) style_categories
-            try:
-                # создаём временную таблицу без UNIQUE(title)
-                await conn.execute(
-                    text(
-                        """
-                        CREATE TABLE style_categories_new (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            title VARCHAR(128) NOT NULL,
-                            description VARCHAR(512) NOT NULL,
-                            image_filename VARCHAR(128) NOT NULL,
-                            gender VARCHAR(16) NOT NULL,
-                            sort_order INTEGER NOT NULL DEFAULT 0,
-                            is_active BOOLEAN NOT NULL DEFAULT 1,
-                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                        )
-                        """
-                    )
-                )
-
-                # копируем данные из старой таблицы, если она есть
-                await conn.execute(
-                    text(
-                        """
-                        INSERT INTO style_categories_new (
-                            id,
-                            title,
-                            description,
-                            image_filename,
-                            gender,
-                            sort_order,
-                            is_active,
-                            created_at
-                        )
-                        SELECT
-                            id,
-                            title,
-                            description,
-                            image_filename,
-                            gender,
-                            sort_order,
-                            is_active,
-                            created_at
-                        FROM style_categories
-                        """
-                    )
-                )
-
-                # удаляем старую таблицу и переименовываем новую
-                await conn.execute(text("DROP TABLE style_categories"))
-                await conn.execute(
-                    text(
-                        "ALTER TABLE style_categories_new RENAME TO style_categories"
-                    )
-                )
-            except OperationalError as e:
-                msg = str(e)
-                # если таблицы нет либо миграция уже делалась, просто пропускаем
-                if (
-                    "no such table: style_categories" in msg
-                    or "table style_categories_new already exists" in msg
-                ):
-                    pass
-                else:
-                    raise
-
-            # 2) style_prompts
-            try:
-                # создаём временную таблицу без UNIQUE(title)
-                await conn.execute(
-                    text(
-                        """
-                        CREATE TABLE style_prompts_new (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            title VARCHAR(128) NOT NULL,
-                            description VARCHAR(512) NOT NULL,
-                            prompt VARCHAR(2048) NOT NULL,
-                            image_filename VARCHAR(128),
-                            category_id INTEGER NOT NULL,
-                            gender VARCHAR(16) NOT NULL,
-                            is_active BOOLEAN NOT NULL DEFAULT 1,
-                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                        )
-                        """
-                    )
-                )
-
-                # копируем данные из старой таблицы
-                await conn.execute(
-                    text(
-                        """
-                        INSERT INTO style_prompts_new (
-                            id,
-                            title,
-                            description,
-                            prompt,
-                            image_filename,
-                            category_id,
-                            gender,
-                            is_active,
-                            created_at
-                        )
-                        SELECT
-                            id,
-                            title,
-                            description,
-                            prompt,
-                            image_filename,
-                            category_id,
-                            gender,
-                            is_active,
-                            created_at
-                        FROM style_prompts
-                        """
-                    )
-                )
-
-                # удаляем старую таблицу и переименовываем новую
-                await conn.execute(text("DROP TABLE style_prompts"))
-                await conn.execute(
-                    text(
-                        "ALTER TABLE style_prompts_new RENAME TO style_prompts"
-                    )
-                )
-            except OperationalError as e:
-                msg = str(e)
-                if (
-                    "no such table: style_prompts" in msg
-                    or "table style_prompts_new already exists" in msg
-                ):
-                    pass
-                else:
-                    raise
-
-        # сюда при желании можно вернуть твои старые миграции для других таблиц
+    # async with engine.begin() as conn:
+    #     # --- input_photos_count в photoshoot_logs ---
+    #     try:
+    #         await conn.execute(
+    #             text(
+    #                 "ALTER TABLE photoshoot_logs "
+    #                 "ADD COLUMN input_photos_count INTEGER DEFAULT 1"
+    #             )
+    #         )
+    #     except OperationalError as e:
+    #         msg = str(e)
+    #         # SQLite / Postgres / прочие варианты «колонка уже есть» или «таблицы нет»
+    #         if (
+    #             "no such table: photoshoot_logs" in msg
+    #             or "duplicate column name: input_photos_count" in msg
+    #             or 'column "input_photos_count" of relation "photoshoot_logs" already exists' in msg
+    #         ):
+    #             # таблица ещё не создана или колонка уже добавлена — игнорируем
+    #             pass
+    #         else:
+    #             raise
+    #
+    #     # --- новый флаг is_referral в таблице users ---
+    #     try:
+    #         await conn.execute(
+    #             text(
+    #                 "ALTER TABLE users "
+    #                 "ADD COLUMN is_referral BOOLEAN DEFAULT 0"
+    #             )
+    #         )
+    #     except OperationalError as e:
+    #         msg = str(e)
+    #         if (
+    #             "no such table: users" in msg
+    #             or "duplicate column name: is_referral" in msg
+    #             or 'column "is_referral" of relation "users" already exists' in msg
+    #         ):
+    #             # таблицы нет или колонка уже есть — игнорируем
+    #             pass
+    #         else:
+    #             raise
+    #
+    #     # --- поле referral_earned_rub в таблице users ---
+    #     try:
+    #         await conn.execute(
+    #             text(
+    #                 "ALTER TABLE users "
+    #                 "ADD COLUMN referral_earned_rub INTEGER DEFAULT 0"
+    #             )
+    #         )
+    #     except OperationalError as e:
+    #         msg = str(e)
+    #         if (
+    #             "no such table: users" in msg
+    #             or "duplicate column name: referral_earned_rub" in msg
+    #             or 'column "referral_earned_rub" of relation "users" already exists' in msg
+    #         ):
+    #             # таблицы нет или колонка уже есть — игнорируем
+    #             pass
+    #         else:
+    #             raise
+    #
+    #     # --- миграция: убрать UNIQUE(title) для style_categories и style_prompts в SQLite ---
+    #     # На других СУБД (Postgres и т.п.) это место можно доработать отдельно при необходимости.
+    #     dialect_name = conn.dialect.name
+    #
+    #     if dialect_name == "sqlite":
+    #         # 1) style_categories
+    #         try:
+    #             # создаём временную таблицу без UNIQUE(title)
+    #             await conn.execute(
+    #                 text(
+    #                     """
+    #                     CREATE TABLE style_categories_new (
+    #                         id INTEGER PRIMARY KEY AUTOINCREMENT,
+    #                         title VARCHAR(128) NOT NULL,
+    #                         description VARCHAR(512) NOT NULL,
+    #                         image_filename VARCHAR(128) NOT NULL,
+    #                         gender VARCHAR(16) NOT NULL,
+    #                         sort_order INTEGER NOT NULL DEFAULT 0,
+    #                         is_active BOOLEAN NOT NULL DEFAULT 1,
+    #                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    #                     )
+    #                     """
+    #                 )
+    #             )
+    #
+    #             # копируем данные из старой таблицы, если она есть
+    #             await conn.execute(
+    #                 text(
+    #                     """
+    #                     INSERT INTO style_categories_new (
+    #                         id,
+    #                         title,
+    #                         description,
+    #                         image_filename,
+    #                         gender,
+    #                         sort_order,
+    #                         is_active,
+    #                         created_at
+    #                     )
+    #                     SELECT
+    #                         id,
+    #                         title,
+    #                         description,
+    #                         image_filename,
+    #                         gender,
+    #                         sort_order,
+    #                         is_active,
+    #                         created_at
+    #                     FROM style_categories
+    #                     """
+    #                 )
+    #             )
+    #
+    #             # удаляем старую таблицу и переименовываем новую
+    #             await conn.execute(text("DROP TABLE style_categories"))
+    #             await conn.execute(
+    #                 text(
+    #                     "ALTER TABLE style_categories_new RENAME TO style_categories"
+    #                 )
+    #             )
+    #         except OperationalError as e:
+    #             msg = str(e)
+    #             # если таблицы нет либо миграция уже делалась, просто пропускаем
+    #             if (
+    #                 "no such table: style_categories" in msg
+    #                 or "table style_categories_new already exists" in msg
+    #             ):
+    #                 pass
+    #             else:
+    #                 raise
+    #
+    #         # 2) style_prompts
+    #         try:
+    #             # создаём временную таблицу без UNIQUE(title)
+    #             await conn.execute(
+    #                 text(
+    #                     """
+    #                     CREATE TABLE style_prompts_new (
+    #                         id INTEGER PRIMARY KEY AUTOINCREMENT,
+    #                         title VARCHAR(128) NOT NULL,
+    #                         description VARCHAR(512) NOT NULL,
+    #                         prompt VARCHAR(2048) NOT NULL,
+    #                         image_filename VARCHAR(128),
+    #                         category_id INTEGER NOT NULL,
+    #                         gender VARCHAR(16) NOT NULL,
+    #                         is_active BOOLEAN NOT NULL DEFAULT 1,
+    #                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    #                     )
+    #                     """
+    #                 )
+    #             )
+    #
+    #             # копируем данные из старой таблицы
+    #             await conn.execute(
+    #                 text(
+    #                     """
+    #                     INSERT INTO style_prompts_new (
+    #                         id,
+    #                         title,
+    #                         description,
+    #                         prompt,
+    #                         image_filename,
+    #                         category_id,
+    #                         gender,
+    #                         is_active,
+    #                         created_at
+    #                     )
+    #                     SELECT
+    #                         id,
+    #                         title,
+    #                         description,
+    #                         prompt,
+    #                         image_filename,
+    #                         category_id,
+    #                         gender,
+    #                         is_active,
+    #                         created_at
+    #                     FROM style_prompts
+    #                     """
+    #                 )
+    #             )
+    #
+    #             # удаляем старую таблицу и переименовываем новую
+    #             await conn.execute(text("DROP TABLE style_prompts"))
+    #             await conn.execute(
+    #                 text(
+    #                     "ALTER TABLE style_prompts_new RENAME TO style_prompts"
+    #                 )
+    #             )
+    #         except OperationalError as e:
+    #             msg = str(e)
+    #             if (
+    #                 "no such table: style_prompts" in msg
+    #                 or "table style_prompts_new already exists" in msg
+    #             ):
+    #                 pass
+    #             else:
+    #                 raise
+    #
+    #     # сюда при желании можно вернуть твои старые миграции для других таблиц
+    pass
 
 
 async def init_db() -> None:
