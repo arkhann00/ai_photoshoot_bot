@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from sqlalchemy import select, func, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from src.config import settings
 from src.paths import IMG_DIR
@@ -1230,6 +1231,7 @@ class AdminReferralResponse(BaseModel):
     referrals_count: int
     earned_rub: int
 
+
 @app.get(
     "/api/admin/referrals",
     response_model=List[AdminReferralResponse],
@@ -1238,16 +1240,51 @@ async def admin_get_referrals_endpoint(
     user: CurrentUser = Depends(get_current_user),
 ) -> List[AdminReferralResponse]:
     """
-    Список партнёров-рефералов для админки.
-
-    Сейчас — заглушка: возвращает пустой список.
-    Позже сюда можно подвязать реальные данные из БД.
+    Список партнёров-рефералов для админки:
+    - telegram_id
+    - username
+    - referrals_count (сколько пользователей пришло по ссылке)
+    - earned_rub (накопительно сколько заработал партнёр)
     """
     ensure_admin(user)
 
-    # ВРЕМЕННО: просто пустой список, чтобы фронт не получал 404.
-    # Когда появится логика рефералок в БД, заполни этот список реальными данными.
-    return []
+    RefUser = aliased(User)
+
+    # Подзапрос: сколько рефералов у каждого referrer_id
+    ref_counts_subq = (
+        select(
+            User.referrer_id.label("referrer_id"),
+            func.count(User.id).label("referrals_count"),
+        )
+        .where(User.referrer_id.is_not(None))
+        .group_by(User.referrer_id)
+        .subquery()
+    )
+
+    stmt = (
+        select(
+            RefUser.telegram_id.label("telegram_id"),
+            RefUser.username.label("username"),
+            RefUser.referral_earned_rub.label("earned_rub"),
+            func.coalesce(ref_counts_subq.c.referrals_count, 0).label("referrals_count"),
+        )
+        .where(RefUser.is_referral == True)  # noqa: E712
+        .outerjoin(ref_counts_subq, ref_counts_subq.c.referrer_id == RefUser.telegram_id)
+        .order_by(RefUser.referral_earned_rub.desc(), RefUser.created_at.desc())
+    )
+
+    async with async_session() as session:
+        rows = (await session.execute(stmt)).all()
+
+    return [
+        AdminReferralResponse(
+            telegram_id=int(r._mapping["telegram_id"]),
+            username=r._mapping["username"],
+            referrals_count=int(r._mapping["referrals_count"] or 0),
+            earned_rub=int(r._mapping["earned_rub"] or 0),
+        )
+        for r in rows
+    ]
 
 # -------------------------------------------------------------------
 # Категории и стили — публичное API для фронта
