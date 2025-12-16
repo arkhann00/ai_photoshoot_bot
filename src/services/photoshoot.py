@@ -249,7 +249,7 @@ async def generate_photoshoot_image(
             "responseModalities": ["IMAGE"],
             "imageConfig": {
                 "aspectRatio": aspect_ratio,
-                "imageSize": "4K",
+                "imageSize": "1K",
             },
         },
     }

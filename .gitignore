@@ -2,3 +2,10 @@
 .gitignore
 bot_data
 img
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
