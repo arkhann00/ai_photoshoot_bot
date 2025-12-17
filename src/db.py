@@ -35,10 +35,9 @@ from src.data.star_offers import StarOffer
 # -------------------------------------------------------------------
 
 SUPER_ADMIN_ID = 707366569
-DATABASE_URL = settings.DATABASE_URL
 
 engine = create_async_engine(
-    DATABASE_URL,
+    settings.DATABASE_URL,
     echo=False,
     future=True,
 )
@@ -1304,3 +1303,27 @@ async def get_styles_for_category_ids_and_gender(
         )
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+async def clear_users_statistics(clear_photoshoot_logs: bool = True) -> dict:
+    """
+    Очищает статистику для админки.
+    - user_stats: агрегированная статистика (то, что выводится в таблице)
+    - photoshoot_logs: логи фотосессий (если clear_photoshoot_logs=True)
+
+    Возвращает словарь с числами удалённых строк (где возможно).
+    """
+    async with async_session() as session:
+        deleted_logs = 0
+        if clear_photoshoot_logs:
+            res_logs = await session.execute(delete(PhotoshootLog))
+            deleted_logs = int(res_logs.rowcount or 0)
+
+        res_stats = await session.execute(delete(UserStats))
+        deleted_stats = int(res_stats.rowcount or 0)
+
+        await session.commit()
+
+        return {
+            "deleted_user_stats": deleted_stats,
+            "deleted_photoshoot_logs": deleted_logs,
+        }

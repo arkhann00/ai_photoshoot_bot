@@ -64,7 +64,7 @@ from src.db import (
     get_admin_users,
     set_user_admin_flag,
     set_user_referral_flag,
-    User, get_styles_for_category_ids, get_styles_for_category_ids_and_gender,
+    User, get_styles_for_category_ids, get_styles_for_category_ids_and_gender, clear_users_statistics,
 )
 
 # -------------------------------------------------------------------
@@ -1464,4 +1464,28 @@ async def api_catalog(
     return CatalogResponse(
         gender=gender_enum.value,
         categories=result_categories,
+    )
+
+class AdminClearStatsRequest(BaseModel):
+    confirm: str
+    clear_logs: bool = True
+
+@app.post("/api/admin/users/stats/clear")
+async def admin_clear_users_stats(
+    body: AdminClearStatsRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> JSONResponse:
+    ensure_admin(user)
+
+    # дополнительная защита от случайного вызова
+    if body.confirm != "CLEAR":
+        raise HTTPException(status_code=400, detail="Confirmation required")
+
+    result = await clear_users_statistics(clear_photoshoot_logs=bool(body.clear_logs))
+
+    return JSONResponse(
+        {
+            "status": "ok",
+            **result,
+        }
     )
