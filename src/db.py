@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import enum
+import datetime as dt
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 from uuid import uuid4
-import datetime as dt
-from fastapi import HTTPException
+
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -16,7 +16,7 @@ from sqlalchemy import (
     String,
     func,
     select,
-    case, delete,
+    delete,
 )
 from sqlalchemy.exc import OperationalError, IntegrityError
 from sqlalchemy.ext.asyncio import (
@@ -25,7 +25,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column
-    # noqa
 from sqlalchemy.sql.expression import text
 
 from src.config import settings
@@ -228,219 +227,151 @@ class UserAvatar(Base):
     )
 
 
+class UserStats(Base):
+    __tablename__ = "user_stats"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, index=True, unique=True)
+
+    # Сколько рублей списали за все успешные фотосессии
+    spent_rub: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Кол-во успешных и заваленных фотосессий
+    photos_success: Mapped[int] = mapped_column(Integer, default=0)
+    photos_failed: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Когда последний раз была фотосессия (успешная или неуспешная)
+    last_photoshoot_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
+class SupportTopic(Base):
+    __tablename__ = "support_topics"
+
+    telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    thread_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 # -------------------------------------------------------------------
-# Миграции "в лоб"
+# Миграции "в лоб" + фиксы sequence (Postgres)
 # -------------------------------------------------------------------
+
+def _is_postgres(conn) -> bool:
+    return conn.dialect.name == "postgresql"
+
+
+async def _postgres_fix_sequences(conn) -> None:
+    """
+    Синхронизирует sequences/identity для таблиц с autoincrement PK (id),
+    чтобы nextval() всегда выдавал MAX(id)+1.
+
+    Это именно то, что лечит ошибку:
+    duplicate key value violates unique constraint "..._pkey"
+    """
+    await conn.execute(
+        text(
+            """
+DO $$
+DECLARE
+  r record;
+  seq_name text;
+  max_id bigint;
+BEGIN
+  FOR r IN
+    SELECT * FROM (VALUES
+      ('users', 'id'),
+      ('star_payments', 'id'),
+      ('style_categories', 'id'),
+      ('style_prompts', 'id'),
+      ('photoshoot_logs', 'id'),
+      ('user_avatars', 'id'),
+      ('user_stats', 'id')
+    ) AS t(tbl, col)
+  LOOP
+    SELECT pg_get_serial_sequence(r.tbl, r.col) INTO seq_name;
+
+    -- Если колонка не serial/identity, seq_name может быть NULL — тогда пропускаем.
+    IF seq_name IS NOT NULL THEN
+      EXECUTE format('SELECT COALESCE(MAX(%I), 1) FROM %I', r.col, r.tbl) INTO max_id;
+      EXECUTE format('SELECT setval(%L, %s, true)', seq_name, max_id);
+    END IF;
+  END LOOP;
+END $$;
+            """
+        )
+    )
 
 
 async def run_manual_migrations() -> None:
     """
     Ручные ALTER TABLE для уже существующей БД.
-    На свежей БД (после create_all) они спокойно проигнорируются.
+    Плюс: фиксы sequences для Postgres.
     """
-    # async with engine.begin() as conn:
-    #     # --- input_photos_count в photoshoot_logs ---
-    #     try:
-    #         await conn.execute(
-    #             text(
-    #                 "ALTER TABLE photoshoot_logs "
-    #                 "ADD COLUMN input_photos_count INTEGER DEFAULT 1"
-    #             )
-    #         )
-    #     except OperationalError as e:
-    #         msg = str(e)
-    #         # SQLite / Postgres / прочие варианты «колонка уже есть» или «таблицы нет»
-    #         if (
-    #             "no such table: photoshoot_logs" in msg
-    #             or "duplicate column name: input_photos_count" in msg
-    #             or 'column "input_photos_count" of relation "photoshoot_logs" already exists' in msg
-    #         ):
-    #             # таблица ещё не создана или колонка уже добавлена — игнорируем
-    #             pass
-    #         else:
-    #             raise
-    #
-    #     # --- новый флаг is_referral в таблице users ---
-    #     try:
-    #         await conn.execute(
-    #             text(
-    #                 "ALTER TABLE users "
-    #                 "ADD COLUMN is_referral BOOLEAN DEFAULT 0"
-    #             )
-    #         )
-    #     except OperationalError as e:
-    #         msg = str(e)
-    #         if (
-    #             "no such table: users" in msg
-    #             or "duplicate column name: is_referral" in msg
-    #             or 'column "is_referral" of relation "users" already exists' in msg
-    #         ):
-    #             # таблицы нет или колонка уже есть — игнорируем
-    #             pass
-    #         else:
-    #             raise
-    #
-    #     # --- поле referral_earned_rub в таблице users ---
-    #     try:
-    #         await conn.execute(
-    #             text(
-    #                 "ALTER TABLE users "
-    #                 "ADD COLUMN referral_earned_rub INTEGER DEFAULT 0"
-    #             )
-    #         )
-    #     except OperationalError as e:
-    #         msg = str(e)
-    #         if (
-    #             "no such table: users" in msg
-    #             or "duplicate column name: referral_earned_rub" in msg
-    #             or 'column "referral_earned_rub" of relation "users" already exists' in msg
-    #         ):
-    #             # таблицы нет или колонка уже есть — игнорируем
-    #             pass
-    #         else:
-    #             raise
-    #
-    #     # --- миграция: убрать UNIQUE(title) для style_categories и style_prompts в SQLite ---
-    #     # На других СУБД (Postgres и т.п.) это место можно доработать отдельно при необходимости.
-    #     dialect_name = conn.dialect.name
-    #
-    #     if dialect_name == "sqlite":
-    #         # 1) style_categories
-    #         try:
-    #             # создаём временную таблицу без UNIQUE(title)
-    #             await conn.execute(
-    #                 text(
-    #                     """
-    #                     CREATE TABLE style_categories_new (
-    #                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-    #                         title VARCHAR(128) NOT NULL,
-    #                         description VARCHAR(512) NOT NULL,
-    #                         image_filename VARCHAR(128) NOT NULL,
-    #                         gender VARCHAR(16) NOT NULL,
-    #                         sort_order INTEGER NOT NULL DEFAULT 0,
-    #                         is_active BOOLEAN NOT NULL DEFAULT 1,
-    #                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    #                     )
-    #                     """
-    #                 )
-    #             )
-    #
-    #             # копируем данные из старой таблицы, если она есть
-    #             await conn.execute(
-    #                 text(
-    #                     """
-    #                     INSERT INTO style_categories_new (
-    #                         id,
-    #                         title,
-    #                         description,
-    #                         image_filename,
-    #                         gender,
-    #                         sort_order,
-    #                         is_active,
-    #                         created_at
-    #                     )
-    #                     SELECT
-    #                         id,
-    #                         title,
-    #                         description,
-    #                         image_filename,
-    #                         gender,
-    #                         sort_order,
-    #                         is_active,
-    #                         created_at
-    #                     FROM style_categories
-    #                     """
-    #                 )
-    #             )
-    #
-    #             # удаляем старую таблицу и переименовываем новую
-    #             await conn.execute(text("DROP TABLE style_categories"))
-    #             await conn.execute(
-    #                 text(
-    #                     "ALTER TABLE style_categories_new RENAME TO style_categories"
-    #                 )
-    #             )
-    #         except OperationalError as e:
-    #             msg = str(e)
-    #             # если таблицы нет либо миграция уже делалась, просто пропускаем
-    #             if (
-    #                 "no such table: style_categories" in msg
-    #                 or "table style_categories_new already exists" in msg
-    #             ):
-    #                 pass
-    #             else:
-    #                 raise
-    #
-    #         # 2) style_prompts
-    #         try:
-    #             # создаём временную таблицу без UNIQUE(title)
-    #             await conn.execute(
-    #                 text(
-    #                     """
-    #                     CREATE TABLE style_prompts_new (
-    #                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-    #                         title VARCHAR(128) NOT NULL,
-    #                         description VARCHAR(512) NOT NULL,
-    #                         prompt VARCHAR(2048) NOT NULL,
-    #                         image_filename VARCHAR(128),
-    #                         category_id INTEGER NOT NULL,
-    #                         gender VARCHAR(16) NOT NULL,
-    #                         is_active BOOLEAN NOT NULL DEFAULT 1,
-    #                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    #                     )
-    #                     """
-    #                 )
-    #             )
-    #
-    #             # копируем данные из старой таблицы
-    #             await conn.execute(
-    #                 text(
-    #                     """
-    #                     INSERT INTO style_prompts_new (
-    #                         id,
-    #                         title,
-    #                         description,
-    #                         prompt,
-    #                         image_filename,
-    #                         category_id,
-    #                         gender,
-    #                         is_active,
-    #                         created_at
-    #                     )
-    #                     SELECT
-    #                         id,
-    #                         title,
-    #                         description,
-    #                         prompt,
-    #                         image_filename,
-    #                         category_id,
-    #                         gender,
-    #                         is_active,
-    #                         created_at
-    #                     FROM style_prompts
-    #                     """
-    #                 )
-    #             )
-    #
-    #             # удаляем старую таблицу и переименовываем новую
-    #             await conn.execute(text("DROP TABLE style_prompts"))
-    #             await conn.execute(
-    #                 text(
-    #                     "ALTER TABLE style_prompts_new RENAME TO style_prompts"
-    #                 )
-    #             )
-    #         except OperationalError as e:
-    #             msg = str(e)
-    #             if (
-    #                 "no such table: style_prompts" in msg
-    #                 or "table style_prompts_new already exists" in msg
-    #             ):
-    #                 pass
-    #             else:
-    #                 raise
-    #
-    #     # сюда при желании можно вернуть твои старые миграции для других таблиц
-    pass
+    async with engine.begin() as conn:
+        # 1) Добавляем колонки, если база старая
+        if _is_postgres(conn):
+            # Postgres умеет IF NOT EXISTS
+            await conn.execute(
+                text(
+                    'ALTER TABLE photoshoot_logs ADD COLUMN IF NOT EXISTS input_photos_count INTEGER DEFAULT 1;'
+                )
+            )
+            await conn.execute(
+                text(
+                    'ALTER TABLE users ADD COLUMN IF NOT EXISTS is_referral BOOLEAN DEFAULT FALSE;'
+                )
+            )
+            await conn.execute(
+                text(
+                    'ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_earned_rub INTEGER DEFAULT 0;'
+                )
+            )
+            await conn.execute(
+                text(
+                    'ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_id BIGINT;'
+                )
+            )
+        else:
+            # Для SQLite/других диалектов оставляем старую стратегию try/except
+            # (в твоём проекте сейчас фактически Postgres, но пусть будет безопасно)
+            try:
+                await conn.execute(
+                    text("ALTER TABLE photoshoot_logs ADD COLUMN input_photos_count INTEGER DEFAULT 1")
+                )
+            except OperationalError:
+                pass
+
+            try:
+                await conn.execute(
+                    text("ALTER TABLE users ADD COLUMN is_referral BOOLEAN DEFAULT 0")
+                )
+            except OperationalError:
+                pass
+
+            try:
+                await conn.execute(
+                    text("ALTER TABLE users ADD COLUMN referral_earned_rub INTEGER DEFAULT 0")
+                )
+            except OperationalError:
+                pass
+
+            try:
+                await conn.execute(
+                    text("ALTER TABLE users ADD COLUMN referrer_id BIGINT")
+                )
+            except OperationalError:
+                pass
+
+        # 2) КЛЮЧЕВОЕ: синхронизируем sequences (лечит твой UniqueViolation по pkey)
+        if _is_postgres(conn):
+            await _postgres_fix_sequences(conn)
 
 
 async def init_db() -> None:
@@ -456,7 +387,6 @@ async def init_db() -> None:
 # -------------------------------------------------------------------
 # Пользователи / админы / рефералы
 # -------------------------------------------------------------------
-
 
 async def get_or_create_user(
     telegram_id: int,
@@ -653,7 +583,6 @@ async def get_user_balance(telegram_id: int) -> int:
 
 # ---------- Потребление фотосессий (кредиты/рубли) ----------
 
-
 async def consume_photoshoot_credit_or_balance(
     telegram_id: int,
     price_rub: int,
@@ -774,7 +703,6 @@ async def change_user_balance(telegram_id: int, delta: int) -> Optional[User]:
 # Платежи Stars
 # -------------------------------------------------------------------
 
-
 async def create_star_payment(
     telegram_id: int,
     offer: StarOffer,
@@ -793,7 +721,6 @@ async def create_star_payment(
         session.add(payment)
         await session.commit()
         await session.refresh(payment)
-
         return payment
 
 
@@ -855,7 +782,6 @@ async def mark_star_payment_success(
 # -------------------------------------------------------------------
 # Логи фотосессий и отчёты
 # -------------------------------------------------------------------
-
 
 async def log_photoshoot(
     telegram_id: int,
@@ -994,7 +920,6 @@ async def get_payments_report(days: int = 7) -> dict:
 # Аватары
 # -------------------------------------------------------------------
 
-
 async def get_user_avatar(telegram_id: int) -> Optional[UserAvatar]:
     """
     Возвращает текущий аватар пользователя (если есть).
@@ -1016,6 +941,7 @@ async def get_user_avatars(telegram_id: int) -> list[UserAvatar]:
     """
     avatar = await get_user_avatar(telegram_id)
     return [avatar] if avatar else []
+
 
 async def set_user_avatar(
     telegram_id: int,
@@ -1041,7 +967,6 @@ async def set_user_avatar(
         await session.commit()
         await session.refresh(avatar)
         return avatar
-
 
 
 async def create_user_avatar(
@@ -1081,15 +1006,12 @@ async def delete_user_avatar(telegram_id: int) -> bool:
             delete(UserAvatar).where(UserAvatar.telegram_id == telegram_id)
         )
         await session.commit()
-
-        # rowcount обычно число удалённых строк
         return bool(res.rowcount and res.rowcount > 0)
 
 
 # -------------------------------------------------------------------
 # Стили / категории
 # -------------------------------------------------------------------
-
 
 async def count_active_styles() -> int:
     async with async_session() as session:
@@ -1179,6 +1101,7 @@ async def get_style_categories_for_gender(gender: StyleGender) -> list[StyleCate
         )
         return list(result.scalars().all())
 
+
 async def get_all_style_categories(include_inactive: bool = False) -> list[StyleCategory]:
     async with async_session() as session:
         stmt = select(StyleCategory)
@@ -1187,6 +1110,11 @@ async def get_all_style_categories(include_inactive: bool = False) -> list[Style
         stmt = stmt.order_by(StyleCategory.sort_order.asc(), StyleCategory.id.asc())
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+
+def _is_style_prompts_pk_duplicate(e: IntegrityError) -> bool:
+    s = str(e)
+    return ("duplicate key value violates unique constraint" in s) and ("style_prompts_pkey" in s)
 
 
 async def create_style_prompt(
@@ -1198,6 +1126,10 @@ async def create_style_prompt(
 ) -> StylePrompt:
     """
     Создаёт новый стиль. Пол берём из категории.
+
+    Предохранитель:
+    если в Postgres съехала sequence и получили duplicate по style_prompts_pkey —
+    1 раз чиним sequences и повторяем insert.
     """
     async with async_session() as session:
         result = await session.execute(
@@ -1207,18 +1139,31 @@ async def create_style_prompt(
         if category is None:
             raise ValueError(f"StyleCategory with id={category_id} not found")
 
-        style = StylePrompt(
-            title=title,
-            description=description,
-            prompt=prompt,
-            image_filename=image_filename,
-            category_id=category.id,
-            gender=category.gender,
-        )
-        session.add(style)
-        await session.commit()
-        await session.refresh(style)
-        return style
+        async def _insert_once() -> StylePrompt:
+            obj = StylePrompt(
+                title=title,
+                description=description,
+                prompt=prompt,
+                image_filename=image_filename,
+                category_id=category.id,
+                gender=category.gender,
+            )
+            session.add(obj)
+            await session.commit()
+            await session.refresh(obj)
+            return obj
+
+        try:
+            return await _insert_once()
+        except IntegrityError as e:
+            await session.rollback()
+            if _is_style_prompts_pk_duplicate(e):
+                # Лечим sequences на уровне БД и пробуем ещё раз
+                async with engine.begin() as conn:
+                    if _is_postgres(conn):
+                        await _postgres_fix_sequences(conn)
+                return await _insert_once()
+            raise
 
 
 async def get_styles_for_category(category_id: int) -> list[StylePrompt]:
@@ -1252,25 +1197,9 @@ async def get_styles_by_category_and_gender(
         return list(result.scalars().all())
 
 
-class UserStats(Base):
-    __tablename__ = "user_stats"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    telegram_id: Mapped[int] = mapped_column(BigInteger, index=True, unique=True)
-
-    # Сколько рублей списали за все успешные фотосессии
-    spent_rub: Mapped[int] = mapped_column(Integer, default=0)
-
-    # Кол-во успешных и заваленных фотосессий
-    photos_success: Mapped[int] = mapped_column(Integer, default=0)
-    photos_failed: Mapped[int] = mapped_column(Integer, default=0)
-
-    # Когда последний раз была фотосессия (успешная или неуспешная)
-    last_photoshoot_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-
+# -------------------------------------------------------------------
+# UserStats helpers
+# -------------------------------------------------------------------
 
 async def get_or_create_user_stats(telegram_id: int) -> UserStats:
     """
@@ -1308,16 +1237,10 @@ async def get_all_user_stats() -> list[UserStats]:
         return list(result.scalars().all())
 
 
-class SupportTopic(Base):
-    __tablename__ = "support_topics"
+# -------------------------------------------------------------------
+# Support topics
+# -------------------------------------------------------------------
 
-    telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    thread_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
 async def get_support_thread_id(telegram_id: int) -> Optional[int]:
     async with async_session() as session:
         obj = await session.get(SupportTopic, telegram_id)
@@ -1341,6 +1264,11 @@ async def bind_support_thread(telegram_id: int, thread_id: int) -> None:
         except IntegrityError:
             await session.rollback()
             # кто-то уже записал — ок
+
+
+# -------------------------------------------------------------------
+# Bulk getters for categories
+# -------------------------------------------------------------------
 
 async def get_styles_for_category_ids(category_ids: list[int]) -> list[StylePrompt]:
     if not category_ids:
