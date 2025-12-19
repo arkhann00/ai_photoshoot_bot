@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from sqlalchemy import select, func, delete as sa_delete
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -153,6 +153,7 @@ class StyleResponse(BaseModel):
     is_active: bool
     category_id: int
     gender: str
+    is_new: bool  # ✅ ДОБАВИЛИ
 
 
 class PhotoshootResponse(BaseModel):
@@ -908,8 +909,9 @@ async def admin_list_styles(
                 is_active=s.is_active,
                 category_id=s.category_id,
                 gender=s.gender.value,
+                is_new=bool(getattr(s, "is_new", False)),  # ✅
             )
-        )
+)
     return result
 
 
@@ -919,6 +921,8 @@ async def admin_create_style_endpoint(
     description: str = Form(""),
     prompt: str = Form(""),
     category_id: int = Form(...),
+    is_new: bool = Form(False),          # ✅ поддержка is_new
+    new: Optional[bool] = Form(None),    # ✅ поддержка "new" (если фронт так шлёт)
     image: UploadFile | None = File(None),
     file: UploadFile | None = File(None),
     user: CurrentUser = Depends(get_current_user),
@@ -928,6 +932,8 @@ async def admin_create_style_endpoint(
     Файл можно прислать либо в поле "image", либо "file".
     """
     ensure_admin(user)
+
+    effective_is_new = bool(new) if new is not None else bool(is_new)
 
     category = await get_style_category_by_id(category_id)
     if category is None:
@@ -950,6 +956,15 @@ async def admin_create_style_endpoint(
         category_id=category_id,
     )
 
+    # ✅ выставляем is_new (без зависимости от сигнатуры create_style_prompt)
+    async with async_session() as session:
+        db_style = await session.get(StylePrompt, style.id)
+        if db_style is not None and hasattr(db_style, "is_new"):
+            db_style.is_new = effective_is_new
+            await session.commit()
+            await session.refresh(db_style)
+            style = db_style  # чтобы ниже отдать актуальное значение
+
     image_url = f"/static/img/{style.image_filename}"
     return StyleResponse(
         id=style.id,
@@ -961,6 +976,7 @@ async def admin_create_style_endpoint(
         is_active=style.is_active,
         category_id=style.category_id,
         gender=style.gender.value,
+        is_new=bool(getattr(style, "is_new", False)),  # ✅
     )
 
 
@@ -1155,7 +1171,6 @@ async def admin_set_referral_flag_endpoint(
         created_at=created_at_str,
     )
 
-
 @app.put(
     "/api/admin/styles/{style_id}",
     response_model=StyleResponse,
@@ -1166,6 +1181,8 @@ async def admin_update_style_endpoint(
     description: str = Form(""),
     prompt: str = Form(""),
     category_id: int = Form(...),
+    is_new: Optional[bool] = Form(None),   # ✅ можно менять is_new
+    new: Optional[bool] = Form(None),      # ✅ можно менять "new"
     image: UploadFile | None = File(None),
     file: UploadFile | None = File(None),
     user: CurrentUser = Depends(get_current_user),
@@ -1174,16 +1191,21 @@ async def admin_update_style_endpoint(
     Обновление стиля в админке:
     - можно поменять title / description / prompt / category_id
     - можно сменить картинку (image/file), если передана
+    - можно менять is_new
     """
     ensure_admin(user)
 
+    effective_is_new: Optional[bool] = None
+    if new is not None:
+        effective_is_new = bool(new)
+    elif is_new is not None:
+        effective_is_new = bool(is_new)
+
     async with async_session() as session:
-        # 1. Находим сам стиль
         db_style = await session.get(StylePrompt, style_id)
         if db_style is None:
             raise HTTPException(status_code=404, detail="Style not found")
 
-        # 2. Проверяем, что новая категория существует
         result = await session.execute(
             select(StyleCategory).where(StyleCategory.id == category_id)
         )
@@ -1191,15 +1213,16 @@ async def admin_update_style_endpoint(
         if category is None:
             raise HTTPException(status_code=400, detail="Category not found")
 
-        # 3. Обновляем поля
         db_style.title = title
-        db_style.description = description
         db_style.description = description
         db_style.prompt = prompt
         db_style.category_id = category.id
-        db_style.gender = category.gender  # пол наследуем от категории
+        db_style.gender = category.gender
 
-        # 4. Если прислали новую картинку — сохраняем и обновляем image_filename
+        # ✅ обновляем is_new только если поле пришло
+        if effective_is_new is not None and hasattr(db_style, "is_new"):
+            db_style.is_new = effective_is_new
+
         upload = image or file
         if upload is not None:
             image_filename = await admin_styles.save_uploaded_image(
@@ -1223,6 +1246,7 @@ async def admin_update_style_endpoint(
             is_active=db_style.is_active,
             category_id=db_style.category_id,
             gender=db_style.gender.value,
+            is_new=bool(getattr(db_style, "is_new", False)),  # ✅
         )
 
 class AdminReferralResponse(BaseModel):
@@ -1354,6 +1378,7 @@ async def api_styles(
             is_active=s.is_active,
             category_id=s.category_id,
             gender=s.gender.value,
+            is_new=bool(getattr(s, "is_new", False)),
         )
         for s in styles
     ]
@@ -1366,6 +1391,7 @@ class StyleCategoryWithStylesResponse(StyleCategoryResponse):
 #     categories: List[StyleCategoryWithStylesResponse]
 
 
+
 class CatalogStyleResponse(BaseModel):
     id: int
     title: str
@@ -1376,6 +1402,7 @@ class CatalogStyleResponse(BaseModel):
     is_active: bool
     category_id: int
     gender: str
+    is_new: bool  # ✅ ДОБАВИЛИ
 
 
 class CatalogCategoryResponse(BaseModel):
@@ -1445,6 +1472,7 @@ async def api_catalog(
                     is_active=s.is_active,
                     category_id=s.category_id,
                     gender=s.gender.value,
+                    is_new=bool(getattr(s, "is_new", False)),
                 )
             )
 

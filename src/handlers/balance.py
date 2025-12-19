@@ -1,6 +1,5 @@
 # src/handlers/balance.py
 
-import asyncio
 import json
 from typing import Dict
 
@@ -14,7 +13,6 @@ from aiogram.types import (
     LabeledPrice,
     PreCheckoutQuery,
     SuccessfulPayment,
-    ContentType,
 )
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext

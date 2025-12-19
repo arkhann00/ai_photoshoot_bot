@@ -13,17 +13,15 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
+from src.db.repositories.styles import increment_style_usage
 from src.handlers.balance import send_quick_topup_invoice_49
 from src.paths import IMG_DIR
 from src.states import MainStates
 from src.data.styles import styles, PHOTOSHOOT_PRICE
 from src.keyboards import (
     get_styles_keyboard,
-    get_balance_keyboard,
     get_after_photoshoot_keyboard,
-    get_back_to_album_keyboard,
     get_start_keyboard,
-    get_photoshoot_entry_keyboard,
     back_to_main_menu_keyboard,
     get_gender_keyboard,
     get_categories_keyboard,
@@ -778,6 +776,26 @@ async def _run_generation(
             provider="comet_gemini_2_5_flash",
             input_photos_count=1,
         )
+        
+                # ✅ Увеличиваем счётчик использований стиля (ТОЛЬКО после успешной генерации)
+        try:
+            st = await state.get_data()
+            style_id = st.get("current_style_id")
+
+            if style_id is None:
+                style_ids = st.get("style_ids") or []
+                idx = st.get("current_style_index", 0)
+                if isinstance(idx, int) and 0 <= idx < len(style_ids):
+                    style_id = style_ids[idx]
+
+            if style_id is not None:
+                await increment_style_usage(int(style_id))
+            else:
+                logger.warning("Не смог определить style_id для инкремента usage_count (style_title=%s)", style_title)
+
+        except Exception as inc_err:
+            # не ломаем генерацию из-за статистики
+            logger.warning("Не удалось увеличить usage_count для стиля %s: %s", style_title, inc_err)
 
         await send_admin_log(
             bot,

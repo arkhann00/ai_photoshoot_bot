@@ -4,7 +4,6 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKe
 
 from src.keyboards import back_to_main_menu_keyboard
 from src.states import MainStates
-from src.config import settings
 from src.services.support_topics import get_or_create_support_thread
 from src.db import get_support_user_id_by_thread
 

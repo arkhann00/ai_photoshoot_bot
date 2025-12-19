@@ -1,0 +1,3 @@
+# src/db/constants.py
+SUPER_ADMIN_ID = 707366569
+MAX_AVATARS_PER_USER = 1
