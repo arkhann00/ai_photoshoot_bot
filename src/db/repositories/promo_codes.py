@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 from sqlalchemy import delete, select, update, desc
 from sqlalchemy.exc import IntegrityError
 
 from src.db import async_session
-from src.db.models import PromoCode, PromoCodeRedemption
+from src.db.models import PromoCode, PromoCodeRedemption, User
 
 
 def _normalize_code(code: str) -> str:
@@ -219,7 +219,10 @@ async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[st
     Правила:
     - промокод должен существовать, быть активным и иметь generations > 0
     - пользователь может применить данный промокод только 1 раз
-    - промокод НЕ выключаем и НЕ меняем generations (это "награда", а не "остаток")
+    - промокод НЕ выключаем и НЕ меняем generations
+
+    Начисление:
+    - добавляем пользователю photoshoot_credits += promo.generations
 
     Возвращает:
     - ("ok", grant)
@@ -231,35 +234,51 @@ async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[st
         return "invalid", 0
 
     async with async_session() as session:
-        # блокируем строку промокода, чтобы конкурентные применения от одного пользователя
-        # отрабатывали предсказуемо
-        stmt = (
-            select(PromoCode)
-            .where(
-                PromoCode.code == normalized,
-                PromoCode.is_active == True,  # noqa: E712
-                PromoCode.generations > 0,
-            )
-            .with_for_update()
-        )
-        promo: Optional[PromoCode] = (await session.execute(stmt)).scalar_one_or_none()
-        if promo is None:
-            return "invalid", 0
-
-        grant = int(promo.generations)
-
-        redemption = PromoCodeRedemption(
-            promo_code_id=int(promo.id),
-            telegram_id=int(telegram_id),
-            granted_generations=grant,
-        )
-        session.add(redemption)
-
         try:
-            await session.commit()
-        except IntegrityError:
-            await session.rollback()
-            # уникальный ключ (promo_code_id, telegram_id) сработал => уже применял
-            return "already_used", 0
+            async with session.begin():
+                # 1) блокируем промокод
+                promo_stmt = (
+                    select(PromoCode)
+                    .where(
+                        PromoCode.code == normalized,
+                        PromoCode.is_active == True,  # noqa: E712
+                        PromoCode.generations > 0,
+                    )
+                    .with_for_update()
+                )
+                promo: Optional[PromoCode] = (await session.execute(promo_stmt)).scalar_one_or_none()
+                if promo is None:
+                    return "invalid", 0
 
-        return "ok", grant
+                grant = int(promo.generations)
+
+                # 2) гарантируем, что пользователь существует + блокируем его строку
+                user_stmt = (
+                    select(User)
+                    .where(User.telegram_id == int(telegram_id))
+                    .with_for_update()
+                )
+                user: Optional[User] = (await session.execute(user_stmt)).scalar_one_or_none()
+                if user is None:
+                    user = User(telegram_id=int(telegram_id), balance=0, photoshoot_credits=0)
+                    session.add(user)
+                    await session.flush()
+
+                # 3) Пытаемся вставить факт использования (у тебя должен быть UNIQUE(promo_code_id, telegram_id))
+                redemption = PromoCodeRedemption(
+                    promo_code_id=int(promo.id),
+                    telegram_id=int(telegram_id),
+                    granted_generations=grant,
+                )
+                session.add(redemption)
+
+                # 4) Начисляем кредиты
+                user.photoshoot_credits = int(user.photoshoot_credits or 0) + grant
+
+            # если дошли сюда — транзакция закоммичена
+            return "ok", grant
+
+        except IntegrityError:
+            # уникальность сработала => уже применял
+            await session.rollback()
+            return "already_used", 0
