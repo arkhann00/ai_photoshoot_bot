@@ -1,7 +1,7 @@
 # src/db/__init__.py
 from __future__ import annotations
 
-from .constants import SUPER_ADMIN_ID, MAX_AVATARS_PER_USER
+from src.constants import SUPER_ADMIN_ID, MAX_AVATARS_PER_USER
 from .session import engine, async_session
 from .base import Base
 from .enums import PaymentStatus, StyleGender, PhotoshootStatus

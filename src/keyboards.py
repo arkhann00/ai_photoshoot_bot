@@ -122,9 +122,10 @@ def get_after_photoshoot_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_back_to_album_keyboard() -> InlineKeyboardMarkup:
+    web_url = _get_webapp_url()
     back_inline_button = InlineKeyboardButton(
         text="« Назад к альбому",
-        callback_data="back_to_album",
+        web_app=WebAppInfo(url=web_url),
     )
     return InlineKeyboardMarkup(inline_keyboard=[[back_inline_button]])
 

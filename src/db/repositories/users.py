@@ -10,6 +10,7 @@ from sqlalchemy.orm import load_only
 
 from src.db.session import async_session
 from src.db.models import User
+from src.constants import PHOTOSHOOT_PRICE
 
 
 async def get_or_create_user(
@@ -227,3 +228,17 @@ async def change_user_balance(telegram_id: int, delta: int) -> Optional[User]:
         await session.commit()
         await session.refresh(user)
         return user
+
+
+async def add_photoshoot_topups(telegram_id: int, generations: int) -> Optional[User]:
+    """
+    Добавляет на баланс пользователя сумму, равную `generations * PHOTOSHOOT_PRICE`.
+    Возвращает обновлённого `User` или `None` если `generations` <= 0.
+    """
+    if generations <= 0:
+        return None
+
+    total_amount = int(PHOTOSHOOT_PRICE) * int(generations)
+    # Убедимся, что пользователь существует (создастся, если отсутствует)
+    await get_user_by_telegram_id(telegram_id)
+    return await change_user_balance(telegram_id, total_amount)

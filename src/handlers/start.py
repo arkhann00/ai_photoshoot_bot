@@ -23,6 +23,7 @@ from src.db import (
     User,
     get_user_avatar,
 )
+from src.db.repositories.users import add_photoshoot_topups
 from src.states import MainStates
 from src.keyboards import (
     get_start_keyboard,
@@ -79,6 +80,15 @@ def get_open_site_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="🌐 Открыть каталог стилей", url=_get_webapp_url())],
             [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_to_main_menu")],
+        ]
+    )
+
+
+def get_subscribe_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔔 Открыть канал", url="https://t.me/photo_ai_studio")],
+            [InlineKeyboardButton(text="✅ Я подписался — проверить", callback_data="check_sub")],
         ]
     )
 
@@ -238,6 +248,22 @@ async def command_start(message: Message, state: FSMContext):
         referrer_telegram_id=referrer_telegram_id,
     )
 
+    # Проверяем подписку на канал @photo_ai_studio
+    is_member = False
+    try:
+        member = await bot.get_chat_member("@photo_ai_studio", message.from_user.id)
+        if getattr(member, "status", None) in ("creator", "administrator", "member"):
+            is_member = True
+    except Exception:
+        is_member = False
+
+    if not is_member:
+        await message.answer(
+            "Чтобы продолжить, подпишитесь на канал @photo_ai_studio и нажмите кнопку 'Я подписался — проверить'.",
+            reply_markup=get_subscribe_keyboard(),
+        )
+        return
+
     # Если пришёл с сайта с выбранным стилем — показываем выбор аватара/фото
     if style_id_for_generation is not None:
         await _enter_photoshoot_waiting_photo(message, state, style_id_for_generation)
@@ -352,6 +378,40 @@ async def referral_link_button(callback: CallbackQuery):
     )
 
     await callback.message.edit_text(text, reply_markup=get_referral_partner_keyboard())
+
+
+
+@router.callback_query(F.data == "check_sub")
+async def check_subscription(callback: CallbackQuery):
+    await callback.answer()
+
+    bot = callback.bot
+    is_member = False
+    try:
+        member = await bot.get_chat_member("@photo_ai_studio", callback.from_user.id)
+        if getattr(member, "status", None) in ("creator", "administrator", "member"):
+            is_member = True
+    except Exception:
+        is_member = False
+
+    if not is_member:
+        await callback.message.answer(
+            "Пока не вижу подписки. Подпишись на канал и нажми кнопку снова.",
+            reply_markup=get_subscribe_keyboard(),
+        )
+        return
+
+    # Пользователь подписан — начисляем 3 генерации и отправляем в главное меню
+    try:
+        await add_photoshoot_topups(callback.from_user.id, 3)
+    except Exception:
+        # не критично, продолжим без падения
+        pass
+
+    await callback.message.answer(
+        "Спасибо за подписку! Тебе начислены 3 генерации — добро пожаловать в главное меню.",
+        reply_markup=get_start_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "referral_transfer_to_balance")

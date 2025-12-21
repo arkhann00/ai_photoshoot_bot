@@ -17,7 +17,7 @@ from src.db.repositories.styles import increment_style_usage
 from src.handlers.balance import send_quick_topup_invoice_49
 from src.paths import IMG_DIR
 from src.states import MainStates
-from src.data.styles import styles, PHOTOSHOOT_PRICE
+from src.constants import PHOTOSHOOT_PRICE
 from src.keyboards import (
     get_styles_keyboard,
     get_after_photoshoot_keyboard,
