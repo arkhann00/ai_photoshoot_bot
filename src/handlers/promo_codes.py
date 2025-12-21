@@ -84,63 +84,30 @@ async def promo_code_cancel(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.message.answer("Ок, отменил ввод промокода.", reply_markup=get_start_keyboard())
     await cb.answer()
 
-
 @router.message(PromoCodeStates.waiting_for_code, F.text)
 async def promo_code_process(message: Message, state: FSMContext) -> None:
-    raw = message.text or ""
-    if raw.strip().lower() in {"/cancel", "cancel", "отмена"}:
-        await state.clear()
-        await message.answer("Ок, отменил.", reply_markup=get_start_keyboard())
-        return
-
-    code = _normalize_code(raw)
-    if not code:
-        await message.answer("Промокод пустой. Введи код текстом или нажми «Отмена».", reply_markup=_promo_cancel_kb())
-        return
-
-    if len(code) > 128:
-        await message.answer("Промокод слишком длинный. Проверь ввод и попробуй ещё раз.", reply_markup=_promo_cancel_kb())
-        return
-
+    code = _normalize_code(message.text or "")
     tg_id = message.from_user.id if message.from_user else 0
     if tg_id <= 0:
-        await message.answer("Не смог определить пользователя. Попробуй ещё раз позже.")
+        await message.answer("Не смог определить пользователя. Попробуй позже.")
+        return
+
+    status, grant = await redeem_promo_code_for_user(telegram_id=tg_id, code=code)
+
+    if status == "invalid":
+        await message.answer("Промокод не найден или недействителен.", reply_markup=_promo_cancel_kb())
+        return
+
+    if status == "already_used":
+        await message.answer("Ты уже использовал этот промокод.", reply_markup=get_start_keyboard())
         await state.clear()
         return
 
-    try:
-        status, grant = await redeem_promo_code_for_user(telegram_id=tg_id, code=code)
-
-        if status == "invalid":
-            await message.answer(
-                "Промокод не найден или недействителен.\nПроверь код и попробуй ещё раз.",
-                reply_markup=_promo_cancel_kb(),
-            )
-            return
-
-        if status == "already_used":
-            await state.clear()
-            await message.answer(
-                "Ты уже использовал этот промокод ранее.",
-                reply_markup=get_start_keyboard(),
-            )
-            return
-
-        # ok
-        await _add_user_credits(tg_id, grant)
-        await state.clear()
-        await message.answer(
-            f"✅ Промокод применён!\nНачислено фотосессий: {grant}",
-            reply_markup=get_start_keyboard(),
-        )
-
-    except Exception:
-        await message.answer(
-            "Произошла ошибка при применении промокода. Попробуй позже или напиши в поддержку.",
-            reply_markup=get_start_keyboard(),
-        )
-        await state.clear()
-
+    await message.answer(
+        f"✅ Промокод применён!\nНачислено фотосессий: {grant}",
+        reply_markup=get_start_keyboard(),
+    )
+    await state.clear()
 
 @router.message(PromoCodeStates.waiting_for_code)
 async def promo_code_non_text(message: Message) -> None:
