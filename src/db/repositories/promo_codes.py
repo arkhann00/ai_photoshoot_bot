@@ -5,7 +5,7 @@ from typing import Optional, List, Tuple
 from sqlalchemy import delete, select, update, desc
 from sqlalchemy.exc import IntegrityError
 
-from src.db import async_session
+from src.db.session import async_session
 from src.db.models import PromoCode, PromoCodeRedemption, User
 
 
@@ -272,8 +272,12 @@ async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[st
                 )
                 session.add(redemption)
 
-                # 4) Начисляем кредиты
-                user.photoshoot_credits = int(user.photoshoot_credits or 0) + grant
+                # 4) ✅ начисляем кредиты прямым SQL UPDATE (самый надёжный способ)
+                await session.execute(
+                    update(User)
+                    .where(User.telegram_id == int(telegram_id))
+                    .values(photoshoot_credits=User.photoshoot_credits + grant)
+                )
 
             # если дошли сюда — транзакция закоммичена
             return "ok", grant
