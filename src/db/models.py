@@ -12,7 +12,9 @@ from sqlalchemy import (
     Enum,
     Integer,
     String,
-    func, text,
+    ForeignKey,
+    func,
+    text, UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -200,8 +202,6 @@ class PromoCode(Base):
     __tablename__ = "promo_codes"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-
-    # Храним сам промокод текстом (без шифрования), но нормализуем при сохранении (см. репозиторий)
     code: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
 
     is_active: Mapped[bool] = mapped_column(
@@ -210,7 +210,6 @@ class PromoCode(Base):
         server_default=text("true"),
     )
 
-    # Сколько генераций (кредитов на генерацию) даёт промокод при применении
     generations: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -228,4 +227,41 @@ class PromoCode(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+class PromoCodeRedemption(Base):
+    """
+    Факт применения промокода пользователем.
+    1 пользователь может применить 1 промокод только один раз.
+    """
+    __tablename__ = "promo_code_redemptions"
+    __table_args__ = (
+        UniqueConstraint("promo_code_id", "telegram_id", name="uq_promo_redemption"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    promo_code_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("promo_codes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    telegram_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        index=True,
+    )
+
+    granted_generations: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    )
+
+    redeemed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
     )

@@ -10,20 +10,14 @@ from aiogram.types import (
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-from sqlalchemy import select
-
-from src.db import async_session
-from src.db.models import PromoCode
-
 # Пытаемся использовать уже существующую функцию, если она есть в твоём проекте
 try:
-    # часто так и называется в твоём бэке
     from src.db import change_user_credits  # type: ignore
-except Exception:  # pragma: no cover
-    change_user_credits = None  # fallback сделаем ниже
+except Exception:
+    change_user_credits = None
 
-# Подключаем стартовую клавиатуру (путь подстрой под свой проект, если отличается)
 from src.keyboards import get_start_keyboard
+from src.db.repositories.promo_codes import redeem_promo_code_for_user
 
 
 router = Router()
@@ -46,22 +40,17 @@ def _normalize_code(code: str) -> str:
 
 
 async def _add_user_credits(telegram_id: int, delta: int) -> None:
-    """
-    Начисляет пользователю credits.
-    1) Если в проекте есть change_user_credits — используем её.
-    2) Иначе делаем прямое обновление через SQLAlchemy.
-    """
     if delta <= 0:
         return
 
     if change_user_credits is not None:
-        # ожидаем async функцию вида change_user_credits(telegram_id=..., delta=...)
         await change_user_credits(telegram_id=telegram_id, delta=delta)  # type: ignore
         return
 
-    # Fallback: прямое обновление (если вдруг change_user_credits отсутствует)
+    # fallback
     from sqlalchemy import update
-    from src.db.models import User  # локальный импорт, чтобы не ломать импорты при другой структуре
+    from src.db import async_session
+    from src.db.models import User
 
     async with async_session() as session:
         stmt = (
@@ -113,49 +102,32 @@ async def promo_code_process(message: Message, state: FSMContext) -> None:
         await message.answer("Промокод слишком длинный. Проверь ввод и попробуй ещё раз.", reply_markup=_promo_cancel_kb())
         return
 
-    # Атомарно проверяем и “сжигаем” промокод:
-    # - существует
-    # - активен
-    # - generations > 0
-    # - блокируем строку (FOR UPDATE), чтобы не списали два раза параллельно
+    tg_id = message.from_user.id if message.from_user else 0
+    if tg_id <= 0:
+        await message.answer("Не смог определить пользователя. Попробуй ещё раз позже.")
+        await state.clear()
+        return
+
     try:
-        async with async_session() as session:
-            stmt = (
-                select(PromoCode)
-                .where(
-                    PromoCode.code == code,
-                    PromoCode.is_active == True,  # noqa: E712
-                    PromoCode.generations > 0,
-                )
-                .with_for_update()
+        status, grant = await redeem_promo_code_for_user(telegram_id=tg_id, code=code)
+
+        if status == "invalid":
+            await message.answer(
+                "Промокод не найден или недействителен.\nПроверь код и попробуй ещё раз.",
+                reply_markup=_promo_cancel_kb(),
             )
-            promo: PromoCode | None = (await session.execute(stmt)).scalar_one_or_none()
-
-            if promo is None:
-                await message.answer(
-                    "Промокод не найден или уже недействителен.\n"
-                    "Проверь код и попробуй ещё раз.",
-                    reply_markup=_promo_cancel_kb(),
-                )
-                return
-
-            grant = int(promo.generations)
-
-            # Логика “одноразового” промокода:
-            # отдаём все generations пользователю и делаем промокод недействительным
-            promo.generations = 0
-            promo.is_active = False
-
-            await session.commit()
-
-        # начисляем пользователю кредиты
-        tg_id = message.from_user.id if message.from_user else 0
-        if tg_id <= 0:
-            await message.answer("Не смог определить пользователя. Попробуй ещё раз позже.")
             return
 
-        await _add_user_credits(tg_id, grant)
+        if status == "already_used":
+            await state.clear()
+            await message.answer(
+                "Ты уже использовал этот промокод ранее.",
+                reply_markup=get_start_keyboard(),
+            )
+            return
 
+        # ok
+        await _add_user_credits(tg_id, grant)
         await state.clear()
         await message.answer(
             f"✅ Промокод применён!\nНачислено фотосессий: {grant}",

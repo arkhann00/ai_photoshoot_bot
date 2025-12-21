@@ -6,7 +6,7 @@ from sqlalchemy import delete, select, update, desc
 from sqlalchemy.exc import IntegrityError
 
 from src.db import async_session
-from src.db.models import PromoCode
+from src.db.models import PromoCode, PromoCodeRedemption
 
 
 def _normalize_code(code: str) -> str:
@@ -210,3 +210,56 @@ async def delete_promo_code_by_code(*, code: str) -> bool:
         res = await session.execute(stmt)
         await session.commit()
         return (res.rowcount or 0) > 0
+
+
+async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[str, int]:
+    """
+    Применение промокода пользователем.
+
+    Правила:
+    - промокод должен существовать, быть активным и иметь generations > 0
+    - пользователь может применить данный промокод только 1 раз
+    - промокод НЕ выключаем и НЕ меняем generations (это "награда", а не "остаток")
+
+    Возвращает:
+    - ("ok", grant)
+    - ("already_used", 0)
+    - ("invalid", 0)
+    """
+    normalized = _normalize_code(code)
+    if not normalized or telegram_id <= 0:
+        return "invalid", 0
+
+    async with async_session() as session:
+        # блокируем строку промокода, чтобы конкурентные применения от одного пользователя
+        # отрабатывали предсказуемо
+        stmt = (
+            select(PromoCode)
+            .where(
+                PromoCode.code == normalized,
+                PromoCode.is_active == True,  # noqa: E712
+                PromoCode.generations > 0,
+            )
+            .with_for_update()
+        )
+        promo: Optional[PromoCode] = (await session.execute(stmt)).scalar_one_or_none()
+        if promo is None:
+            return "invalid", 0
+
+        grant = int(promo.generations)
+
+        redemption = PromoCodeRedemption(
+            promo_code_id=int(promo.id),
+            telegram_id=int(telegram_id),
+            granted_generations=grant,
+        )
+        session.add(redemption)
+
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            # уникальный ключ (promo_code_id, telegram_id) сработал => уже применял
+            return "already_used", 0
+
+        return "ok", grant
