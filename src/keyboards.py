@@ -48,11 +48,17 @@ def get_start_keyboard() -> InlineKeyboardMarkup:
         callback_data="personal_cabinet",
     )
 
+    promo_button = InlineKeyboardButton(
+        text="Промокод",
+        callback_data="promo_code",
+    )
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [make_photoshoot_button],
             [balance_button, support_button],
-            [referral_button, cabinet_button],
+            [referral_button, promo_button],
+            [cabinet_button]
         ],
     )
 
