@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover
     change_user_credits = None  # fallback сделаем ниже
 
 # Подключаем стартовую клавиатуру (путь подстрой под свой проект, если отличается)
-from src.keyboards.start import get_start_keyboard
+from src.keyboards import get_start_keyboard
 
 
 router = Router()
