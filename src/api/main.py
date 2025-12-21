@@ -34,6 +34,13 @@ from src.paths import IMG_DIR
 from src.data.styles import PHOTOSHOOT_PRICE
 from src.services.web_photoshoot import generate_photoshoot_image_from_bytes
 from src.api import admin_styles
+from src.db.repositories.promo_codes import (
+    create_promo_code,
+    list_promo_codes,
+    set_promo_code_active,
+    delete_promo_code,
+    get_promo_code_by_code,
+)
 from src.db import (
     async_session,
     get_or_create_user,
@@ -65,6 +72,7 @@ from src.db import (
     set_user_admin_flag,
     set_user_referral_flag,
     User, get_styles_for_category_ids, get_styles_for_category_ids_and_gender, clear_users_statistics,
+
 )
 
 # -------------------------------------------------------------------
@@ -1516,4 +1524,163 @@ async def admin_clear_users_stats(
             "status": "ok",
             **result,
         }
+    )
+
+class PromoCodeResponse(BaseModel):
+    id: int
+    code: str
+    is_active: bool
+    generations: int
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class AdminPromoCodeCreateRequest(BaseModel):
+    code: str
+    generations: int = 1
+    is_active: bool = True
+
+
+class AdminPromoCodeSetActiveRequest(BaseModel):
+    is_active: bool
+
+# -------------------------------------------------------------------
+# Промокоды — админка
+# -------------------------------------------------------------------
+
+@app.get("/api/admin/promo-codes", response_model=List[PromoCodeResponse])
+async def admin_list_promo_codes(
+    user: CurrentUser = Depends(get_current_user),
+) -> List[PromoCodeResponse]:
+    ensure_admin(user)
+
+    rows = await list_promo_codes(include_inactive=True)
+
+    result: List[PromoCodeResponse] = []
+    for r in rows:
+        created_at_str = r.created_at.isoformat() if getattr(r, "created_at", None) else None
+        updated_at_str = r.updated_at.isoformat() if getattr(r, "updated_at", None) else None
+        result.append(
+            PromoCodeResponse(
+                id=int(r.id),
+                code=str(r.code),
+                is_active=bool(r.is_active),
+                generations=int(r.generations),
+                created_at=created_at_str,
+                updated_at=updated_at_str,
+            )
+        )
+    return result
+
+
+@app.post("/api/admin/promo-codes", response_model=PromoCodeResponse)
+async def admin_create_promo_code(
+    body: AdminPromoCodeCreateRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> PromoCodeResponse:
+    ensure_admin(user)
+
+    code = (body.code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="code is required")
+    if len(code) > 128:
+        raise HTTPException(status_code=400, detail="code is too long (max 128)")
+    if body.generations <= 0:
+        raise HTTPException(status_code=400, detail="generations must be > 0")
+
+    # нормализуем: без пробелов по краям (регистр оставляю как есть)
+    try:
+        promo = await create_promo_code(
+            code=code,
+            generations=int(body.generations),
+            is_active=bool(body.is_active),
+        )
+    except ValueError as e:
+        # например: промокод уже существует
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to create promo code")
+
+    created_at_str = promo.created_at.isoformat() if getattr(promo, "created_at", None) else None
+    updated_at_str = promo.updated_at.isoformat() if getattr(promo, "updated_at", None) else None
+
+    return PromoCodeResponse(
+        id=int(promo.id),
+        code=str(promo.code),
+        is_active=bool(promo.is_active),
+        generations=int(promo.generations),
+        created_at=created_at_str,
+        updated_at=updated_at_str,
+    )
+
+
+@app.post("/api/admin/promo-codes/{promo_id}/active", response_model=PromoCodeResponse)
+async def admin_set_promo_code_active(
+    promo_id: int,
+    body: AdminPromoCodeSetActiveRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> PromoCodeResponse:
+    ensure_admin(user)
+
+    if promo_id <= 0:
+        raise HTTPException(status_code=400, detail="promo_id must be positive")
+
+    updated = await set_promo_code_active(promo_id=promo_id, is_active=bool(body.is_active))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Promo code not found")
+
+    created_at_str = updated.created_at.isoformat() if getattr(updated, "created_at", None) else None
+    updated_at_str = updated.updated_at.isoformat() if getattr(updated, "updated_at", None) else None
+
+    return PromoCodeResponse(
+        id=int(updated.id),
+        code=str(updated.code),
+        is_active=bool(updated.is_active),
+        generations=int(updated.generations),
+        created_at=created_at_str,
+        updated_at=updated_at_str,
+    )
+
+
+@app.delete("/api/admin/promo-codes/{promo_id}")
+async def admin_delete_promo_code(
+    promo_id: int,
+    user: CurrentUser = Depends(get_current_user),
+) -> JSONResponse:
+    ensure_admin(user)
+
+    if promo_id <= 0:
+        raise HTTPException(status_code=400, detail="promo_id must be positive")
+
+    ok = await delete_promo_code(promo_id=promo_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Promo code not found")
+
+    return JSONResponse({"status": "ok"})
+
+
+@app.get("/api/admin/promo-codes/by-code", response_model=PromoCodeResponse)
+async def admin_get_promo_by_code(
+    code: str = Query(..., min_length=1, max_length=128),
+    user: CurrentUser = Depends(get_current_user),
+) -> PromoCodeResponse:
+    """
+    Удобно для админки: быстро проверить промокод по тексту.
+    """
+    ensure_admin(user)
+
+    promo = await get_promo_code_by_code(code.strip())
+    if promo is None:
+        raise HTTPException(status_code=404, detail="Promo code not found")
+
+    created_at_str = promo.created_at.isoformat() if getattr(promo, "created_at", None) else None
+    updated_at_str = promo.updated_at.isoformat() if getattr(promo, "updated_at", None) else None
+
+    return PromoCodeResponse(
+        id=int(promo.id),
+        code=str(promo.code),
+        is_active=bool(promo.is_active),
+        generations=int(promo.generations),
+        created_at=created_at_str,
+        updated_at=updated_at_str,
     )

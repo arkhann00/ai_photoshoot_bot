@@ -195,3 +195,37 @@ class SupportTopic(Base):
         server_default=func.now(),
         nullable=False,
     )
+
+class PromoCode(Base):
+    __tablename__ = "promo_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # Храним сам промокод текстом (без шифрования), но нормализуем при сохранении (см. репозиторий)
+    code: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    )
+
+    # Сколько генераций (кредитов на генерацию) даёт промокод при применении
+    generations: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    )
+
+    created_at: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    updated_at: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

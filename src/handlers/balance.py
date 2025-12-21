@@ -181,8 +181,7 @@ async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
         )
     ]
 
-    # Важно: payload должен начинаться с "balance_topup", потому что pre_checkout это проверяет
-    payload = f"balance_topup_quick:{pay_amount_rub}"
+    payload = f"balance_topup:{pay_amount_rub}"
 
     provider_data = build_provider_data(
         description=f"Пополнение баланса на {credit_amount_rub} ₽",
@@ -190,12 +189,12 @@ async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
     )
 
     try:
-        # ✅ всегда в личку
+        # Отправляем инвойс в личку пользователя
         await bot.send_invoice(
             chat_id=user_id,
             title="Пополнение баланса",
             description=(
-                "Быстрое пополнение баланса.\n"
+                "Пополнение баланса аккаунта.\n"
                 f"Вы платите {pay_amount_rub} ₽, "
                 f"на баланс будет зачислено {credit_amount_rub} ₽."
             ),
@@ -203,7 +202,7 @@ async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
             currency="RUB",
             prices=prices,
             payload=payload,
-            start_parameter="balance_topup_quick",
+            start_parameter="balance_topup",
             need_email=True,
             send_email_to_provider=True,
             need_phone_number=False,
