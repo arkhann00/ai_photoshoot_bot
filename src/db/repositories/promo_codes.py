@@ -5,6 +5,7 @@ from typing import Optional, List, Tuple
 from sqlalchemy import delete, select, update, desc
 from sqlalchemy.exc import IntegrityError
 
+from src.constants import PHOTOSHOOT_PRICE
 from src.db.session import async_session
 from src.db.models import PromoCode, PromoCodeRedemption, User
 
@@ -212,20 +213,31 @@ async def delete_promo_code_by_code(*, code: str) -> bool:
         return (res.rowcount or 0) > 0
 
 
-async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[str, int, int]:
+async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[str, int]:
     """
+    Применение промокода пользователем.
+
+    Правила:
+    - промокод существует, активен и generations > 0
+    - один и тот же пользователь может применить один и тот же промокод только 1 раз
+    - промокод НЕ выключаем и НЕ меняем generations
+
+    Начисление:
+    - balance += PHOTOSHOOT_PRICE * promo.generations
+
     Возвращает:
-    - ("ok", grant, new_credits)
-    - ("already_used", 0, current_credits)
-    - ("invalid", 0, current_credits)
+    - ("ok", generations)
+    - ("already_used", 0)
+    - ("invalid", 0)
     """
     normalized = _normalize_code(code)
     if not normalized or telegram_id <= 0:
-        return "invalid", 0, 0
+        return "invalid", 0
 
     async with async_session() as session:
         try:
             async with session.begin():
+                # 1) блокируем промокод
                 promo_stmt = (
                     select(PromoCode)
                     .where(
@@ -237,14 +249,12 @@ async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[st
                 )
                 promo: Optional[PromoCode] = (await session.execute(promo_stmt)).scalar_one_or_none()
                 if promo is None:
-                    # попробуем вернуть текущие кредиты (если юзер есть)
-                    cur = await session.scalar(
-                        select(User.photoshoot_credits).where(User.telegram_id == int(telegram_id))
-                    )
-                    return "invalid", 0, int(cur or 0)
+                    return "invalid", 0
 
-                grant = int(promo.generations)
+                grant_generations = int(promo.generations)
+                credit_rub = int(PHOTOSHOOT_PRICE) * grant_generations
 
+                # 2) гарантируем, что пользователь существует + блокируем его строку
                 user_stmt = (
                     select(User)
                     .where(User.telegram_id == int(telegram_id))
@@ -256,26 +266,24 @@ async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[st
                     session.add(user)
                     await session.flush()
 
+                # 3) пишем факт применения (UNIQUE(promo_code_id, telegram_id))
                 redemption = PromoCodeRedemption(
                     promo_code_id=int(promo.id),
                     telegram_id=int(telegram_id),
-                    granted_generations=grant,
+                    granted_generations=grant_generations,
                 )
                 session.add(redemption)
 
-                # ✅ начисляем и сразу получаем новое значение
-                new_credits = await session.scalar(
+                # 4) ✅ начисляем рубли на баланс (самый надёжный путь — UPDATE)
+                await session.execute(
                     update(User)
                     .where(User.telegram_id == int(telegram_id))
-                    .values(photoshoot_credits=User.photoshoot_credits + grant)
-                    .returning(User.photoshoot_credits)
+                    .values(balance=User.balance + credit_rub)
                 )
 
-            return "ok", grant, int(new_credits or 0)
+            return "ok", grant_generations
 
         except IntegrityError:
+            # уже применял
             await session.rollback()
-            cur = await session.scalar(
-                select(User.photoshoot_credits).where(User.telegram_id == int(telegram_id))
-            )
-            return "already_used", 0, int(cur or 0)
+            return "already_used", 0

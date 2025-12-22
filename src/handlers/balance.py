@@ -341,7 +341,7 @@ def build_provider_data(description: str, amount_rub: int) -> str:
 
 # =====================================================================
 # Вход в раздел «Баланс»
-# =====================================================================
+# =====================================================================ё
 
 @router.callback_query(F.data == "balance")
 async def open_balance(callback: CallbackQuery) -> None:

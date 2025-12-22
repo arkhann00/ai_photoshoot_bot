@@ -5,6 +5,7 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
+from src.constants import PHOTOSHOOT_PRICE
 from src.keyboards import get_start_keyboard
 from src.db.repositories.promo_codes import redeem_promo_code_for_user
 
@@ -74,10 +75,10 @@ async def promo_code_process(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
 
+    credited_rub = int(PHOTOSHOOT_PRICE) * int(grant)
     await message.answer(
         f"✅ Промокод применён!\n"
-        f"Начислено фотосессий: {grant}\n"
-        f"Теперь доступно фотосессий: {new_credits}",
+        f"Начислено: {grant} генераций (= {credited_rub} ₽ на баланс).",
         reply_markup=get_start_keyboard(),
     )
     await state.clear()
