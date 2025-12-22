@@ -60,16 +60,19 @@ async def promo_code_process(message: Message, state: FSMContext) -> None:
         await message.answer("Промокод пустой. Введи код текстом.", reply_markup=_promo_cancel_kb())
         return
 
-    status, grant, new_credits = await redeem_promo_code_for_user(telegram_id=tg_id, code=code)
+    status, grant, new_balance = await redeem_promo_code_for_user(telegram_id=tg_id, code=code)
 
     if status == "invalid":
-        await message.answer("Промокод не найден или недействителен.", reply_markup=_promo_cancel_kb())
+        await message.answer(
+            "Промокод не найден или недействителен.",
+            reply_markup=_promo_cancel_kb(),
+        )
         return
 
     if status == "already_used":
         await message.answer(
             f"Ты уже использовал этот промокод.\n"
-            f"Твои фотосессии: {new_credits}",
+            f"Текущий баланс: {new_balance} ₽",
             reply_markup=get_start_keyboard(),
         )
         await state.clear()
@@ -78,7 +81,8 @@ async def promo_code_process(message: Message, state: FSMContext) -> None:
     credited_rub = int(PHOTOSHOOT_PRICE) * int(grant)
     await message.answer(
         f"✅ Промокод применён!\n"
-        f"Начислено: {grant} генераций (= {credited_rub} ₽ на баланс).",
+        f"Начислено: {grant} генераций (= {credited_rub} ₽ на баланс).\n"
+        f"Текущий баланс: {new_balance} ₽",
         reply_markup=get_start_keyboard(),
     )
     await state.clear()
