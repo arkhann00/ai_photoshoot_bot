@@ -57,8 +57,7 @@ def get_start_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [make_photoshoot_button],
             [balance_button, support_button],
-            [referral_button, promo_button],
-            [cabinet_button]
+            [referral_button, cabinet_button],
         ],
     )
 

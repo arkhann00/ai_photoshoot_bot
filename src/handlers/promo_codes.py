@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from src.constants import PHOTOSHOOT_PRICE
 from src.keyboards import get_start_keyboard
 from src.db.repositories.promo_codes import redeem_promo_code_for_user
+from src.handlers.balance import get_balance_keyboard
 
 router = Router()
 

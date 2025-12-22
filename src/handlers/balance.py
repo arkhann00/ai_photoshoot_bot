@@ -158,6 +158,12 @@ def get_balance_keyboard() -> InlineKeyboardMarkup:
                     callback_data="back_to_main_menu",
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text="Промокод",
+                    callback_data="promo_code"
+                )
+            ]
         ]
     )
 
