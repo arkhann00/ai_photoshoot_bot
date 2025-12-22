@@ -21,7 +21,7 @@ from aiogram.fsm.context import FSMContext
 from src.db import (
     get_user_balance as db_get_user_balance,
     get_user_by_telegram_id,
-    change_user_balance,
+    change_user_balance, add_referral_earnings,
 )
 
 router = Router()
@@ -699,6 +699,28 @@ async def successful_payment_handler(message: Message) -> None:
     bot = message.bot
 
     new_balance = await add_to_balance_rub(telegram_id, credited_amount_rub)
+
+    # ✅ Реферальный процент с пополнения (пример: 5%)
+    REF_TOPUP_PERCENT = 5
+
+    user_db = await get_user_by_telegram_id(telegram_id)
+    referrer_id = getattr(user_db, "referrer_id", None)
+
+    if referrer_id:
+        reward = int(credited_amount_rub * REF_TOPUP_PERCENT / 100)
+        if reward > 0:
+            await add_referral_earnings(int(referrer_id), reward)
+
+            await send_admin_log(
+                bot,
+                (
+                    "🤝 <b>Реферальное начисление с пополнения</b>\n"
+                    f"Реферал: <code>{telegram_id}</code> @{username}\n"
+                    f"Пригласитель: <code>{referrer_id}</code>\n"
+                    f"Пополнение: <b>{credited_amount_rub} ₽</b>\n"
+                    f"Начислено пригласителю: <b>{reward} ₽</b>"
+                ),
+            )
 
     text = (
         "Оплата прошла успешно!\n"

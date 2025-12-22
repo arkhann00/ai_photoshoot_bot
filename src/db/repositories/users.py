@@ -24,17 +24,30 @@ async def get_or_create_user(
 
         if user:
             changed = False
+
             if username is not None and user.username != username:
                 user.username = username
                 changed = True
+
+            # ✅ ВАЖНО: если реферер пришёл позже — привязываем, но только 1 раз
+            if (
+                referrer_telegram_id is not None
+                and referrer_telegram_id != telegram_id
+                and user.referrer_id is None
+            ):
+                user.referrer_id = referrer_telegram_id
+                changed = True
+
             if changed:
                 await session.commit()
+                await session.refresh(user)
+
             return user
 
         user = User(
             telegram_id=telegram_id,
             username=username,
-            referrer_id=referrer_telegram_id,
+            referrer_id=referrer_telegram_id if (referrer_telegram_id != telegram_id) else None,
         )
         session.add(user)
         await session.commit()
