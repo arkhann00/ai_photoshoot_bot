@@ -212,31 +212,20 @@ async def delete_promo_code_by_code(*, code: str) -> bool:
         return (res.rowcount or 0) > 0
 
 
-async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[str, int]:
+async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[str, int, int]:
     """
-    Применение промокода пользователем.
-
-    Правила:
-    - промокод должен существовать, быть активным и иметь generations > 0
-    - пользователь может применить данный промокод только 1 раз
-    - промокод НЕ выключаем и НЕ меняем generations
-
-    Начисление:
-    - добавляем пользователю photoshoot_credits += promo.generations
-
     Возвращает:
-    - ("ok", grant)
-    - ("already_used", 0)
-    - ("invalid", 0)
+    - ("ok", grant, new_credits)
+    - ("already_used", 0, current_credits)
+    - ("invalid", 0, current_credits)
     """
     normalized = _normalize_code(code)
     if not normalized or telegram_id <= 0:
-        return "invalid", 0
+        return "invalid", 0, 0
 
     async with async_session() as session:
         try:
             async with session.begin():
-                # 1) блокируем промокод
                 promo_stmt = (
                     select(PromoCode)
                     .where(
@@ -248,11 +237,14 @@ async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[st
                 )
                 promo: Optional[PromoCode] = (await session.execute(promo_stmt)).scalar_one_or_none()
                 if promo is None:
-                    return "invalid", 0
+                    # попробуем вернуть текущие кредиты (если юзер есть)
+                    cur = await session.scalar(
+                        select(User.photoshoot_credits).where(User.telegram_id == int(telegram_id))
+                    )
+                    return "invalid", 0, int(cur or 0)
 
                 grant = int(promo.generations)
 
-                # 2) гарантируем, что пользователь существует + блокируем его строку
                 user_stmt = (
                     select(User)
                     .where(User.telegram_id == int(telegram_id))
@@ -264,7 +256,6 @@ async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[st
                     session.add(user)
                     await session.flush()
 
-                # 3) Пытаемся вставить факт использования (у тебя должен быть UNIQUE(promo_code_id, telegram_id))
                 redemption = PromoCodeRedemption(
                     promo_code_id=int(promo.id),
                     telegram_id=int(telegram_id),
@@ -272,17 +263,19 @@ async def redeem_promo_code_for_user(*, telegram_id: int, code: str) -> Tuple[st
                 )
                 session.add(redemption)
 
-                # 4) ✅ начисляем кредиты прямым SQL UPDATE (самый надёжный способ)
-                await session.execute(
+                # ✅ начисляем и сразу получаем новое значение
+                new_credits = await session.scalar(
                     update(User)
                     .where(User.telegram_id == int(telegram_id))
                     .values(photoshoot_credits=User.photoshoot_credits + grant)
+                    .returning(User.photoshoot_credits)
                 )
 
-            # если дошли сюда — транзакция закоммичена
-            return "ok", grant
+            return "ok", grant, int(new_credits or 0)
 
         except IntegrityError:
-            # уникальность сработала => уже применял
             await session.rollback()
-            return "already_used", 0
+            cur = await session.scalar(
+                select(User.photoshoot_credits).where(User.telegram_id == int(telegram_id))
+            )
+            return "already_used", 0, int(cur or 0)
