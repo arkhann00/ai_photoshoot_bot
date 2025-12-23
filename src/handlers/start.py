@@ -35,7 +35,7 @@ router = Router()
 
 ADM_GROUP_ID = -5075627878
 
-CHANNEL_USERNAME = "saffy_gadgets"
+CHANNEL_USERNAME = "photo_ai_studio"
 CHANNEL_URL = f"https://t.me/@{CHANNEL_USERNAME}"
 
 
