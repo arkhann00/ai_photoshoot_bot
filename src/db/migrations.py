@@ -88,5 +88,5 @@ async def run_manual_migrations() -> None:
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await cleanup_img()
+        # await cleanup_img()
     await run_manual_migrations()
