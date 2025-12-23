@@ -4,6 +4,8 @@ from __future__ import annotations
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.sql.expression import text
 
+from src.db.utils import main as cleanup_img
+
 from .base import Base
 from .session import engine
 
@@ -86,5 +88,5 @@ async def run_manual_migrations() -> None:
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
+        await cleanup_img()
     await run_manual_migrations()
