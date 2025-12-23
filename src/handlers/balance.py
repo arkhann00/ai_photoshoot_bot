@@ -153,12 +153,12 @@ def get_balance_keyboard() -> InlineKeyboardMarkup:
                 )
             ],
 
-        [
-            InlineKeyboardButton(
-                text="Промокод",
-                callback_data="promo_code"
-            )
-        ],
+            [
+                InlineKeyboardButton(
+                    text="Промокод",
+                    callback_data="promo_code"
+                )
+            ],
 
             [
                 InlineKeyboardButton(
