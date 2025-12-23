@@ -35,6 +35,9 @@ router = Router()
 
 ADM_GROUP_ID = -5075627878
 
+CHANNEL_USERNAME = "saffy_gadgets"
+CHANNEL_URL = f"https://t.me/@{CHANNEL_USERNAME}"
+
 
 def _get_webapp_url() -> str:
     return getattr(settings, "WEBAPP_URL", None) or "https://aiphotostudio.ru/"
@@ -87,7 +90,7 @@ def get_open_site_keyboard() -> InlineKeyboardMarkup:
 def get_subscribe_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔔 Открыть канал", url="https://t.me/saffy_gadgets")],
+            [InlineKeyboardButton(text="🔔 Открыть канал", url=CHANNEL_URL)],
             [InlineKeyboardButton(text="✅ Я подписался — проверить", callback_data="check_sub")],
         ]
     )
@@ -248,10 +251,9 @@ async def command_start(message: Message, state: FSMContext):
         referrer_telegram_id=referrer_telegram_id,
     )
 
-    # Проверяем подписку на канал @photo_ai_studio
     is_member = False
     try:
-        member = await bot.get_chat_member("@photo_ai_studio", message.from_user.id)
+        member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", message.from_user.id)
         if getattr(member, "status", None) in ("creator", "administrator", "member"):
             is_member = True
     except Exception:
@@ -259,7 +261,7 @@ async def command_start(message: Message, state: FSMContext):
 
     if not is_member:
         await message.answer(
-            "Чтобы продолжить, подпишитесь на канал @saffy_gadgets и нажмите кнопку 'Я подписался — проверить'.",
+            f"Чтобы продолжить, подпишитесь на канал @{CHANNEL_USERNAME} и нажмите кнопку 'Я подписался — проверить'.",
             reply_markup=get_subscribe_keyboard(),
         )
         return
@@ -388,7 +390,7 @@ async def check_subscription(callback: CallbackQuery):
     bot = callback.bot
     is_member = False
     try:
-        member = await bot.get_chat_member("@saffy_gadgets", callback.from_user.id)
+        member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", callback.from_user.id)
         if getattr(member, "status", None) in ("creator", "administrator", "member"):
             is_member = True
     except Exception:
