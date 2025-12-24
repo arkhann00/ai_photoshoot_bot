@@ -25,7 +25,7 @@ APIYI_BASE_URL = "https://api.apiyi.com"
 APIYI_MODEL_NAME_DEFAULT = "gemini-3-pro-image-preview"
 
 # 4K может занимать дольше
-DEFAULT_TIMEOUT_SECONDS = 600
+DEFAULT_TIMEOUT_SECONDS = 800
 
 # Ограничение по твоему требованию
 MAX_INPUT_PHOTOS = 3
