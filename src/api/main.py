@@ -39,7 +39,7 @@ from src.db.repositories.promo_codes import (
     delete_promo_code,
     get_promo_code_by_code,
 )
-from src.db.repositories.users import get_all_users
+from src.db.repositories.users import (get_all_users, clear_user_balance)
 from src.db import (
     async_session,
     get_or_create_user,
