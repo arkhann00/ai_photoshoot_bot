@@ -3,7 +3,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
-
+from src.db.session import engine
 from src.config import settings
 from src.db import init_db
 from src.handlers import (
@@ -23,6 +23,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
+async def on_shutdown():
+    await engine.dispose()
+
 
 async def main() -> None:
     bot = Bot(
@@ -40,12 +43,15 @@ async def main() -> None:
     dp.include_router(payments_stars_router)
     dp.include_router(cabinet_router)
     dp.include_router(promo_codes_router)
+    
+    dp.shutdown.register(on_shutdown)
 
     # Инициализация БД (создание таблиц и т.п.)
     await init_db()
 
     # Запуск поллинга
     await dp.start_polling(bot)
+    
 
 
 if __name__ == "__main__":
