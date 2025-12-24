@@ -161,7 +161,8 @@ class StyleResponse(BaseModel):
     is_active: bool
     category_id: int
     gender: str
-    is_new: bool  # ✅ ДОБАВИЛИ
+    is_new: bool
+    usage_count: int = 0   # ✅ ДОБАВЬ
 
 
 class PhotoshootResponse(BaseModel):
@@ -900,7 +901,7 @@ async def admin_list_styles(
     user: CurrentUser = Depends(get_current_user),
 ) -> list[StyleResponse]:
     ensure_admin(user)
-
+    usage_count=int(getattr(s, "usage_count", 0))
     styles = await get_all_style_prompts(include_inactive=True)
 
     result: list[StyleResponse] = []
@@ -940,7 +941,7 @@ async def admin_create_style_endpoint(
     Файл можно прислать либо в поле "image", либо "file".
     """
     ensure_admin(user)
-
+    usage_count=int(getattr(s, "usage_count", 0))
     effective_is_new = bool(new) if new is not None else bool(is_new)
 
     category = await get_style_category_by_id(category_id)
@@ -1202,7 +1203,7 @@ async def admin_update_style_endpoint(
     - можно менять is_new
     """
     ensure_admin(user)
-
+    usage_count=int(getattr(s, "usage_count", 0))
     effective_is_new: Optional[bool] = None
     if new is not None:
         effective_is_new = bool(new)
@@ -1376,20 +1377,21 @@ async def api_styles(
     )
 
     return [
-        StyleResponse(
-            id=s.id,
-            title=s.title,
-            description=s.description,
-            prompt=s.prompt,
-            image_filename=s.image_filename or "",
-            image_url=_img_url(request, s.image_filename),
-            is_active=s.is_active,
-            category_id=s.category_id,
-            gender=s.gender.value,
-            is_new=bool(getattr(s, "is_new", False)),
-        )
-        for s in styles
-    ]
+    StyleResponse(
+        id=s.id,
+        title=s.title,
+        description=s.description,
+        prompt=s.prompt,
+        image_filename=s.image_filename or "",
+        image_url=_img_url(request, s.image_filename),
+        is_active=s.is_active,
+        category_id=s.category_id,
+        gender=s.gender.value,
+        is_new=bool(getattr(s, "is_new", False)),
+        usage_count=int(getattr(s, "usage_count", 0)),  # ✅
+    )
+    for s in styles
+]
 
 class StyleCategoryWithStylesResponse(StyleCategoryResponse):
     styles: List[StyleResponse]
@@ -1410,7 +1412,8 @@ class CatalogStyleResponse(BaseModel):
     is_active: bool
     category_id: int
     gender: str
-    is_new: bool  # ✅ ДОБАВИЛИ
+    is_new: bool
+    usage_count: int = 0   # ✅ ДОБАВЬ
 
 
 class CatalogCategoryResponse(BaseModel):
@@ -1470,19 +1473,20 @@ async def api_catalog(
             style_image_url = f"/static/img/{img}" if img else ""
 
             styles_out.append(
-                CatalogStyleResponse(
-                    id=s.id,
-                    title=s.title,
-                    description=s.description,
-                    prompt=s.prompt,
-                    image_filename=s.image_filename,
-                    image_url=style_image_url,
-                    is_active=s.is_active,
-                    category_id=s.category_id,
-                    gender=s.gender.value,
-                    is_new=bool(getattr(s, "is_new", False)),
-                )
-            )
+    CatalogStyleResponse(
+        id=s.id,
+        title=s.title,
+        description=s.description,
+        prompt=s.prompt,
+        image_filename=s.image_filename,
+        image_url=style_image_url,
+        is_active=s.is_active,
+        category_id=s.category_id,
+        gender=s.gender.value,
+        is_new=bool(getattr(s, "is_new", False)),
+        usage_count=int(getattr(s, "usage_count", 0)),  # ✅
+    )
+)
 
         result_categories.append(
             CatalogCategoryResponse(
