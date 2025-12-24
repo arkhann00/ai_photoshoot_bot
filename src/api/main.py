@@ -8,7 +8,7 @@ import json
 
 from urllib.parse import parse_qsl
 
-from aiogram.methods import Request
+from aiogram import Request
 from fastapi import (
     FastAPI,
     HTTPException,
