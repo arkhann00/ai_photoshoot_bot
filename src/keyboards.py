@@ -161,7 +161,8 @@ def get_categories_carousel_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_error_generating_keyboard() -> InlineKeyboardMarkup:
-    choose_gender = InlineKeyboardButton(text="Попробовать ещё раз", callback_data="back_to_gender")
+    web_url = _get_webapp_url()
+    choose_gender = InlineKeyboardButton(text="Попробовать ещё раз", web_app=WebAppInfo(url=web_url))
     main_menu = InlineKeyboardButton(text="Главное меню", callback_data="back_to_main_menu")
     return InlineKeyboardMarkup(inline_keyboard=[[choose_gender], [main_menu]])
 
