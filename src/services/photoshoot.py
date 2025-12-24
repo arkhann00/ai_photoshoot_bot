@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 APIYI_BASE_URL = "https://api.apiyi.com"
 
 # Модель по умолчанию: поддержка 1K/2K/4K (обычно)
-APIYI_MODEL_NAME_DEFAULT = "gemini-3-pro-image-preview"
+APIYI_MODEL_NAME_DEFAULT = "gemini-2.5-flash-image-preview"
 
 # 4K может занимать дольше
 DEFAULT_TIMEOUT_SECONDS = 600
