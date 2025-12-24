@@ -12,7 +12,11 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
+from io import BytesIO
+from pathlib import Path
 
+from aiogram.types import BufferedInputFile
+from PIL import Image, ImageOps
 from src.db.repositories.styles import increment_style_usage
 from src.handlers.balance import send_quick_topup_invoice_49
 from src.paths import IMG_DIR
@@ -54,6 +58,74 @@ router = Router()
 
 ADM_GROUP_ID = -5075627878
 
+TG_PHOTO_MAX_BYTES = 10 * 1024 * 1024          # 10 MiB (10485760)
+TG_PHOTO_TARGET_BYTES = TG_PHOTO_MAX_BYTES - 64 * 1024  # небольшой запас
+
+
+def _input_file_to_bytes(input_file) -> tuple[bytes, str]:
+    """
+    Приводит результат генерации к (bytes, filename).
+    Поддерживает FSInputFile и BufferedInputFile.
+    """
+    # FSInputFile: читаем файл с диска
+    if isinstance(input_file, FSInputFile):
+        p = Path(str(input_file.path))
+        return p.read_bytes(), p.name
+
+    # BufferedInputFile (aiogram v3)
+    if isinstance(input_file, BufferedInputFile):
+        # в разных версиях атрибут может называться file/data — берём безопасно
+        data = getattr(input_file, "data", None) or getattr(input_file, "file", None)
+        if data is None:
+            raise TypeError("BufferedInputFile without bytes payload")
+        name = getattr(input_file, "filename", None) or "result.bin"
+        return data, name
+
+    raise TypeError(f"Unsupported input file type: {type(input_file)!r}")
+
+
+def _compress_to_jpeg_under_limit(src: bytes, target_bytes: int = TG_PHOTO_TARGET_BYTES) -> bytes | None:
+    """
+    Сжимает изображение в JPEG так, чтобы размер был <= target_bytes.
+    Возвращает JPEG bytes или None если не удалось ужать разумно.
+    """
+    with Image.open(BytesIO(src)) as im:
+        im = ImageOps.exif_transpose(im)
+
+        # JPEG без альфы
+        if im.mode not in ("RGB", "L"):
+            # RGBA/LA/P -> RGB на белом фоне
+            bg = Image.new("RGB", im.size, (255, 255, 255))
+            if "A" in im.getbands():
+                bg.paste(im, mask=im.getchannel("A"))
+            else:
+                bg.paste(im)
+            im = bg
+        else:
+            im = im.convert("RGB")
+
+        def encode(img: Image.Image, quality: int) -> bytes:
+            out = BytesIO()
+            img.save(out, format="JPEG", quality=quality, optimize=True, progressive=True)
+            return out.getvalue()
+
+        # 1) пробуем уменьшать quality без изменения размера
+        for q in (90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30):
+            data = encode(im, q)
+            if len(data) <= target_bytes:
+                return data
+
+        # 2) если всё ещё жирно — уменьшаем размеры и снова quality
+        w, h = im.size
+        for scale in (0.9, 0.8, 0.7, 0.6, 0.5):
+            nw, nh = max(256, int(w * scale)), max(256, int(h * scale))
+            resized = im.resize((nw, nh), Image.LANCZOS)
+            for q in (70, 60, 50, 45, 40, 35, 30):
+                data = encode(resized, q)
+                if len(data) <= target_bytes:
+                    return data
+
+    return None
 
 async def send_admin_log(bot: Bot, text: str) -> None:
     """
@@ -853,21 +925,42 @@ async def _run_generation(
         )
         return
 
-    # отправка результата
-    photo_msg = await bot.send_photo(chat_id=chat_id, photo=generated_photo)
+        # --- отправка результата (документ = оригинал, фото = возможно сжатое) ---
+    orig_bytes, orig_name = _input_file_to_bytes(generated_photo)
 
-    photo_file_id = photo_msg.photo[-1].file_id
+    # 1) Документ — всегда оригинал
+    doc_file = BufferedInputFile(orig_bytes, filename=orig_name or "result.png")
+
+    # 2) Фото — если оригинал > 10MiB, ужимаем (файл при этом НЕ трогаем)
+    photo_file: BufferedInputFile | None
+    if len(orig_bytes) <= TG_PHOTO_MAX_BYTES:
+        # можно отправить как фото без изменений (но на всякий случай даём адекватное имя)
+        photo_file = BufferedInputFile(orig_bytes, filename="preview.jpg")
+    else:
+        compressed = _compress_to_jpeg_under_limit(orig_bytes)
+        photo_file = BufferedInputFile(compressed, filename="preview.jpg") if compressed else None
+
+    photo_file_id: Optional[str] = None
+
+    if photo_file is not None:
+        try:
+            photo_msg = await bot.send_photo(chat_id=chat_id, photo=photo_file)
+            photo_file_id = photo_msg.photo[-1].file_id
+        except TelegramBadRequest as e:
+            # если вдруг Telegram всё равно не принял как фото — не падаем, просто без превью
+            logger.warning("Не удалось отправить превью-фото (будет только файл): %s", e)
+
+    doc_msg = await bot.send_document(
+        chat_id=chat_id,
+        document=doc_file,
+        caption="Готово! Вот твоё фото ✨",
+    )
+
     await state.update_data(
-        last_generated_file_id=photo_file_id,
+        last_generated_file_id=photo_file_id or doc_msg.document.file_id,
         last_generated_style_title=style_title,
         is_generating=False,
         avatar_update_mode=None,
-    )
-
-    await bot.send_document(
-        chat_id=chat_id,
-        document=generated_photo,
-        caption="Готово! Вот твоё фото ✨",
     )
 
     await bot.send_message(
