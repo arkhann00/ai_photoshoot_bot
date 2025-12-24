@@ -255,3 +255,35 @@ async def add_photoshoot_topups(telegram_id: int, generations: int) -> Optional[
     # Убедимся, что пользователь существует (создастся, если отсутствует)
     await get_user_by_telegram_id(telegram_id)
     return await change_user_balance(telegram_id, total_amount)
+
+
+async def clear_user_balance(telegram_id: int) -> Optional[User]:
+    """
+    Обнуляет баланс пользователя (устанавливает в 0).
+    Если пользователя нет — создаёт профиль с нулевым балансом.
+    Возвращает обновлённый объект `User`.
+    """
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
+        user = result.scalar_one_or_none()
+
+        if user is None:
+            user = User(telegram_id=telegram_id, balance=0, photoshoot_credits=0)
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+            return user
+
+
+        
+
+        user.balance = 0
+        await session.commit()
+        await session.refresh(user)
+        return user
+    
+async def get_all_users() -> list[User]:
+            """Возвращает список всех пользователей из таблицы users."""
+            async with async_session() as session:
+                result = await session.execute(select(User))
+                return list(result.scalars().all())

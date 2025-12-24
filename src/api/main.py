@@ -46,8 +46,10 @@ from src.db import (
     get_style_prompt_by_id,
     get_users_page,
     search_users,
+    get_all_users,
     change_user_credits,
     change_user_balance,
+    clear_user_balance,
     get_photoshoot_report,
     get_payments_report,
     log_photoshoot,
@@ -577,6 +579,51 @@ async def admin_search_users(
     return result
 
 
+@app.get("/api/admin/users/all", response_model=List[AdminUserResponse])
+async def admin_get_all_users(user: CurrentUser = Depends(get_current_user)) -> List[AdminUserResponse]:
+    ensure_admin(user)
+
+    users = await get_all_users()
+
+    result: List[AdminUserResponse] = []
+    for u in users:
+        created_at_str = u.created_at.isoformat() if getattr(u, "created_at", None) is not None else None
+        result.append(
+            AdminUserResponse(
+                telegram_id=u.telegram_id,
+                username=u.username,
+                balance=int(u.balance or 0),
+                photoshoot_credits=int(u.photoshoot_credits or 0),
+                is_admin=bool(getattr(u, "is_admin", False)),
+                created_at=created_at_str,
+            )
+        )
+
+    return result
+
+
+@app.post("/api/admin/users/{telegram_id}/balance/clear", response_model=AdminUserResponse)
+async def admin_clear_user_balance(
+    telegram_id: int,
+    user: CurrentUser = Depends(get_current_user),
+) -> AdminUserResponse:
+    ensure_admin(user)
+
+    updated = await clear_user_balance(telegram_id=telegram_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    created_at_str = updated.created_at.isoformat() if getattr(updated, "created_at", None) is not None else None
+    return AdminUserResponse(
+        telegram_id=updated.telegram_id,
+        username=updated.username,
+        balance=updated.balance,
+        photoshoot_credits=updated.photoshoot_credits,
+        is_admin=getattr(updated, "is_admin", False),
+        created_at=created_at_str,
+    )
+
+
 @app.post("/api/admin/users/{telegram_id}/credits", response_model=AdminUserResponse)
 async def admin_change_user_credits(
     telegram_id: int,
@@ -770,11 +817,6 @@ async def api_catalog(
 # -------------------------------------------------------------------
 # Категории и стили — админка
 # -------------------------------------------------------------------
-
-
-async def get_session() -> AsyncSession:
-    async with async_session() as session:
-        yield session
 
 
 @app.get("/api/admin/style-categories", response_model=List[StyleCategoryResponse])

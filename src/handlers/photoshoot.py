@@ -756,23 +756,6 @@ async def make_photoshoot(callback: CallbackQuery, state: FSMContext):
             reply_markup=get_avatar_choice_keyboard(has_avatar=True),
         )
 
-@router.callback_query(F.data == "back_to_album")
-async def back_to_album(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    current_style = data.get("current_style", 0)
-    style = styles[current_style]
-
-    inline_keyboard_markup = get_styles_keyboard()
-
-    await state.set_state(MainStates.making_photoshoot)
-
-    await callback.answer()
-    await callback.message.answer_photo(
-        photo=FSInputFile(str(IMG_DIR / style["img"])),
-        caption=f"<b>{style['title']}</b>\n\n<i>{style['description']}</i>",
-        reply_markup=inline_keyboard_markup,
-    )
-
 
 def get_insufficient_balance_keyboard() -> InlineKeyboardMarkup:
     """
