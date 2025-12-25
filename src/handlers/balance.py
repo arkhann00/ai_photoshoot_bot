@@ -110,16 +110,16 @@ async def add_to_balance_rub(telegram_id: int, amount_rub: int) -> int:
     return int(user.balance or 0)
 
 
-def format_affordability(balance_rub: int) -> str:
-    """
-    Показывает, сколько раз пользователь может оплатить каждый пакет.
-    """
-    lines = []
-    for count in sorted(PHOTO_PACK_PRICES_RUB.keys()):
-        price = PHOTO_PACK_PRICES_RUB[count]
-        times = balance_rub // price if price > 0 else 0
-        lines.append(f"• {count} фото — {price} ₽: хватит на {times} раз(а)")
-    return "\n".join(lines)
+# def format_affordability(balance_rub: int) -> str:
+#     """
+#     Показывает, сколько раз пользователь может оплатить каждый пакет.
+#     """
+#     lines = []
+#     for count in sorted(PHOTO_PACK_PRICES_RUB.keys()):
+#         price = PHOTO_PACK_PRICES_RUB[count]
+#         times = balance_rub // price if price > 0 else 0
+#         lines.append(f"• {count} фото — {price} ₽: хватит на {times} раз(а)")
+#     return "\n".join(lines)
 
 
 async def format_balance_message(telegram_id: int) -> str:
@@ -134,9 +134,9 @@ async def format_balance_message(telegram_id: int) -> str:
         f"Ваш баланс: {balance_rub} ₽\n\n"
         "Тарифы:\n"
         f"{tariffs}\n\n"
-        "На что хватит текущего баланса:\n"
-        f"{format_affordability(balance_rub)}\n\n"
-        "Выберите пакет пополнения или введите свою сумму:"
+        # "На что хватит текущего баланса:\n"
+        # f"{format_affordability(balance_rub)}\n\n"
+        # "Выберите пакет пополнения или введите свою сумму:"
     )
 
 
