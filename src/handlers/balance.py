@@ -32,7 +32,7 @@ ADM_GROUP_ID = -5075627878
 PAYMENT_PROVIDER_TOKEN = "390540012:LIVE:84036"
 
 # ✅ Минимальная сумма пополнения (из-за ограничения Telegram/провайдера)
-MIN_TOPUP_RUB = 105
+MIN_TOPUP_RUB = 99
 
 # Тарифы генерации по количеству фото (шт -> ₽)
 PHOTO_PACK_PRICES_RUB: Dict[int, int] = {
@@ -45,8 +45,7 @@ PHOTO_PACK_PRICES_RUB: Dict[int, int] = {
 
 # Пакеты пополнения: callback_data -> сумма_руб (и платёж, и зачисление)
 TOPUP_OPTIONS: Dict[str, int] = {
-    "topup_50": 50,     # ✅ вместо topup_49
-    "topup_80": 80,
+    "topup_99": 99,
     "topup_100": 100,
     "topup_125": 125,
     "topup_200": 200,
@@ -110,12 +109,10 @@ async def format_balance_message(telegram_id: int) -> str:
 def get_balance_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            # ✅ вместо 49 делаем минималку 50
             [InlineKeyboardButton(
-                text="Минимальное пополнение — 50 ₽ (1 фото = 49 ₽)",
-                callback_data="topup_50"
+                text="Минимальное пополнение — 99 ₽",
+                callback_data="topup_99"
             )],
-            [InlineKeyboardButton(text="Пополнить: 2 фото — 80 ₽", callback_data="topup_80")],
             [InlineKeyboardButton(text="Пополнить: 3 фото — 100 ₽", callback_data="topup_100")],
             [InlineKeyboardButton(text="Пополнить: 5 фото — 125 ₽", callback_data="topup_125")],
             [InlineKeyboardButton(text="Пополнить: 10 фото — 200 ₽", callback_data="topup_200")],
