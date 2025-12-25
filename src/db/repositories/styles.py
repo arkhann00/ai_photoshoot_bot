@@ -177,6 +177,7 @@ async def get_styles_by_category_and_gender(category_id: int, gender: StyleGende
             .order_by(StylePrompt.id.asc())
         )
         result = await session.execute(stmt)
+        print(result.scalars().all())
         return list(result.scalars().all())
 
 
