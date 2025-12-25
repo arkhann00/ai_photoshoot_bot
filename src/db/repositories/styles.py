@@ -177,7 +177,6 @@ async def get_styles_by_category_and_gender(category_id: int, gender: StyleGende
             .order_by(StylePrompt.id.asc())
         )
         result = await session.execute(stmt)
-        print(list(result.scalars().all())[0].image_filename)
         return list(result.scalars().all())
 
 

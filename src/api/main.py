@@ -107,6 +107,8 @@ app.mount(
 # В dev-режиме можно принудительно сделать всех админами
 DEBUG_FORCE_ADMIN = True
 
+PUBLIC_API_BASE_URL = "https://api.aiphotostudio.ru"
+
 # -------------------------------------------------------------------
 # Модели / схемы
 # -------------------------------------------------------------------
@@ -304,11 +306,20 @@ class AdminPromoCodeSetActiveRequest(BaseModel):
 # Telegram initData
 # -------------------------------------------------------------------
 
+from fastapi.responses import FileResponse
+
+@app.get("/api/images/{filename}")
+async def get_image(filename: str):
+    path = IMG_DIR / filename
+    if not path.exists():
+        raise HTTPException(404, "Not found")
+    return FileResponse(path)
+
 
 def _img_url(request: Request, filename: Optional[str]) -> Optional[str]:
     if not filename:
         return None
-    base = str(request.base_url).rstrip("/")
+    base = PUBLIC_API_BASE_URL.rstrip("/")
     return f"{base}/static/img/{filename}"
 
 
