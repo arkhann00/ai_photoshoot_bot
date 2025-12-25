@@ -1,27 +1,28 @@
 # src/handlers/balance.py
 
 import json
-from typing import Dict
+from typing import Dict, Optional
 
-from aiogram import Router, F, Bot
+from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
-    Message,
-    InlineKeyboardMarkup,
     InlineKeyboardButton,
+    InlineKeyboardMarkup,
     LabeledPrice,
+    Message,
     PreCheckoutQuery,
     SuccessfulPayment,
 )
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
 
 # Импортируем функции работы с пользователями и балансом из БД
 from src.db import (
+    add_referral_earnings,
+    change_user_balance,
     get_user_balance as db_get_user_balance,
     get_user_by_telegram_id,
-    change_user_balance, add_referral_earnings,
 )
 
 router = Router()
@@ -32,15 +33,22 @@ ADM_GROUP_ID = -5075627878
 # Для теста можно подставить TEST-токен, для прода — LIVE-токен
 PAYMENT_PROVIDER_TOKEN = "390540012:LIVE:84036"
 
-# Цена одной фотосессии в рублях
-PHOTOSESSION_PRICE_RUB = 49
+# Тарифы генерации по количеству фото (шт -> ₽)
+PHOTO_PACK_PRICES_RUB: Dict[int, int] = {
+    1: 49,
+    2: 80,
+    3: 100,
+    5: 125,
+    10: 200,
+}
 
 # Пакеты пополнения: callback_data -> сумма_руб (и платёж, и зачисление)
 TOPUP_OPTIONS: Dict[str, int] = {
     "topup_49": 49,
-    "topup_350": 350,
-    "topup_1000": 1000,
-    "topup_2000": 2000,
+    "topup_80": 80,
+    "topup_100": 100,
+    "topup_125": 125,
+    "topup_200": 200,
 }
 
 # Налоговая система для чеков (уточни в ЛК ЮKassa при необходимости)
@@ -52,8 +60,8 @@ TAX_SYSTEM_CODE = 1
 VAT_CODE = 1
 
 # Предмет и способ оплаты в чеке
-PAYMENT_MODE = "full_payment"      # полный расчёт
-PAYMENT_SUBJECT = "service"        # услуга (цифровой сервис)
+PAYMENT_MODE = "full_payment"  # полный расчёт
+PAYMENT_SUBJECT = "service"  # услуга (цифровой сервис)
 
 
 class TopupStates(StatesGroup):
@@ -73,7 +81,6 @@ async def send_admin_log(bot: Bot, text: str) -> None:
             disable_web_page_preview=True,
         )
     except Exception:
-        # Логирование не должно ломать основной поток
         return
 
 
@@ -95,79 +102,58 @@ async def add_to_balance_rub(telegram_id: int, amount_rub: int) -> int:
     Начислить пользователю amount_rub рублей на баланс.
     Возвращает новый баланс.
     """
-    # Гарантируем, что пользователь существует
     await get_user_by_telegram_id(telegram_id)
 
     user = await change_user_balance(telegram_id, amount_rub)
     if user is None:
-        # На всякий случай считаем ещё раз из БД
         return await get_balance_rub(telegram_id)
     return int(user.balance or 0)
 
 
-def calc_photosessions_left(balance_rub: int) -> int:
-    if PHOTOSESSION_PRICE_RUB <= 0:
-        return 0
-    return balance_rub // PHOTOSESSION_PRICE_RUB
+def format_affordability(balance_rub: int) -> str:
+    """
+    Показывает, сколько раз пользователь может оплатить каждый пакет.
+    """
+    lines = []
+    for count in sorted(PHOTO_PACK_PRICES_RUB.keys()):
+        price = PHOTO_PACK_PRICES_RUB[count]
+        times = balance_rub // price if price > 0 else 0
+        lines.append(f"• {count} фото — {price} ₽: хватит на {times} раз(а)")
+    return "\n".join(lines)
 
 
 async def format_balance_message(telegram_id: int) -> str:
     balance_rub = await get_balance_rub(telegram_id)
-    sessions_left = calc_photosessions_left(balance_rub)
+
+    tariffs = "\n".join(
+        f"• {cnt} фото — {price} ₽"
+        for cnt, price in sorted(PHOTO_PACK_PRICES_RUB.items(), key=lambda x: x[0])
+    )
 
     return (
-        f"Ваш баланс: {balance_rub} ₽\n"
-        f"Доступно фотосессий по {PHOTOSESSION_PRICE_RUB} ₽: {sessions_left}\n\n"
-        "Выберите сумму пополнения или введите свою:\n\n"
-        "• 350 ₽\n"
-        "• 1 000 ₽\n"
-        "• 2 000 ₽"
+        f"Ваш баланс: {balance_rub} ₽\n\n"
+        "Тарифы:\n"
+        f"{tariffs}\n\n"
+        "На что хватит текущего баланса:\n"
+        f"{format_affordability(balance_rub)}\n\n"
+        "Выберите пакет пополнения или введите свою сумму:"
     )
 
 
 def get_balance_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Пополнить на 350 ₽",
-                    callback_data="topup_350",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Пополнить на 1 000 ₽",
-                    callback_data="topup_1000",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Пополнить на 2 000 ₽",
-                    callback_data="topup_2000",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Другая сумма",
-                    callback_data="topup_custom",
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="Промокод",
-                    callback_data="promo_code"
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="Главное меню",
-                    callback_data="back_to_main_menu",
-                )
-            ]
+            [InlineKeyboardButton(text="Пополнить: 1 фото — 49 ₽", callback_data="topup_49")],
+            [InlineKeyboardButton(text="Пополнить: 2 фото — 80 ₽", callback_data="topup_80")],
+            [InlineKeyboardButton(text="Пополнить: 3 фото — 100 ₽", callback_data="topup_100")],
+            [InlineKeyboardButton(text="Пополнить: 5 фото — 125 ₽", callback_data="topup_125")],
+            [InlineKeyboardButton(text="Пополнить: 10 фото — 200 ₽", callback_data="topup_200")],
+            [InlineKeyboardButton(text="Другая сумма", callback_data="topup_custom")],
+            [InlineKeyboardButton(text="Промокод", callback_data="promo_code")],
+            [InlineKeyboardButton(text="Главное меню", callback_data="back_to_main_menu")],
         ]
     )
+
 
 async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
     """
@@ -197,7 +183,6 @@ async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
     )
 
     try:
-        # Отправляем инвойс в личку пользователя
         await bot.send_invoice(
             chat_id=user_id,
             title="Пополнение баланса",
@@ -221,7 +206,6 @@ async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
             provider_data=provider_data,
         )
 
-        # Если кнопку нажали не в личке — подскажем, где появилась оплата
         if callback.message and callback.message.chat.id != user_id:
             await callback.message.answer("Я отправил оплату тебе в личные сообщения с ботом ✅")
 
@@ -278,22 +262,11 @@ async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
         )
 
 
-
 def get_after_success_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Создать фотосессию ✨",
-                    callback_data="make_photo",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Главное меню",
-                    callback_data="back_to_main_menu",
-                )
-            ],
+            [InlineKeyboardButton(text="Создать фотосессию ✨", callback_data="make_photo")],
+            [InlineKeyboardButton(text="Главное меню", callback_data="back_to_main_menu")],
         ]
     )
 
@@ -301,18 +274,8 @@ def get_after_success_keyboard() -> InlineKeyboardMarkup:
 def get_payment_error_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Попробовать ещё раз",
-                    callback_data="balance",  # вызываем open_balance
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Главное меню",
-                    callback_data="back_to_main_menu",
-                )
-            ],
+            [InlineKeyboardButton(text="Попробовать ещё раз", callback_data="balance")],
+            [InlineKeyboardButton(text="Главное меню", callback_data="back_to_main_menu")],
         ]
     )
 
@@ -329,10 +292,10 @@ def build_provider_data(description: str, amount_rub: int) -> str:
         "receipt": {
             "items": [
                 {
-                    "description": description[:128],  # ограничение Telegram/YooKassa
+                    "description": description[:128],
                     "quantity": 1,
                     "amount": {
-                        "value": f"{amount_rub:.2f}",  # рубли, строкой
+                        "value": f"{amount_rub:.2f}",
                         "currency": "RUB",
                     },
                     "vat_code": VAT_CODE,
@@ -343,20 +306,15 @@ def build_provider_data(description: str, amount_rub: int) -> str:
             "tax_system_code": TAX_SYSTEM_CODE,
         }
     }
-    # Telegram ждёт provider_data как JSON-строку
     return json.dumps(receipt, ensure_ascii=False)
 
 
 # =====================================================================
 # Вход в раздел «Баланс»
-# =====================================================================ё
+# =====================================================================
 
 @router.callback_query(F.data == "balance")
 async def open_balance(callback: CallbackQuery) -> None:
-    """
-    Пользователь нажал кнопку «Баланс» в главном меню.
-    Показываем текущий баланс из БД и варианты пополнения.
-    """
     telegram_id = callback.from_user.id
     username = callback.from_user.username or "—"
     bot = callback.bot
@@ -370,7 +328,6 @@ async def open_balance(callback: CallbackQuery) -> None:
     )
     await callback.answer()
 
-    # Лог в админский чат
     await send_admin_log(
         bot,
         (
@@ -384,9 +341,10 @@ async def open_balance(callback: CallbackQuery) -> None:
 # =====================================================================
 # Выбор готового пакета пополнения
 # =====================================================================
+
 @router.callback_query(F.data.in_(tuple(TOPUP_OPTIONS.keys())))
 async def choose_topup_package(callback: CallbackQuery) -> None:
-    await callback.answer()  # сразу, чтобы не "крутилось"
+    await callback.answer()
 
     option_key = callback.data
     pay_amount_rub = TOPUP_OPTIONS.get(option_key)
@@ -418,7 +376,7 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
     bot = callback.bot
 
     try:
-        # ✅ ВАЖНО: всегда шлём инвойс в ЛИЧКУ пользователю
+        # ✅ всегда шлём invoice в ЛИЧКУ пользователю
         await bot.send_invoice(
             chat_id=user_id,
             title="Пополнение баланса",
@@ -442,12 +400,21 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
             provider_data=provider_data,
         )
 
-        # Если кнопку нажали НЕ в личке — можно подсказать где искать оплату
         if callback.message and callback.message.chat.id != user_id:
             await callback.message.answer("Я отправил оплату тебе в личные сообщения с ботом ✅")
 
+        await send_admin_log(
+            bot,
+            (
+                "💳 <b>Отправлен invoice на пополнение</b>\n"
+                f"Пользователь: <code>{user_id}</code> @{username}\n"
+                f"Тариф-кнопка: <code>{option_key}</code>\n"
+                f"Сумма к оплате: <b>{pay_amount_rub} ₽</b>\n"
+                f"payload: <code>{payload}</code>"
+            ),
+        )
+
     except TelegramForbiddenError as e:
-        # Бот не может написать пользователю в личку (не нажимал /start)
         await send_admin_log(
             bot,
             (
@@ -464,11 +431,10 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
         )
 
     except TelegramBadRequest as e:
-        # Тут будет реальная причина от Telegram (и её нужно видеть)
         await send_admin_log(
             bot,
             (
-                "🔴 <b>Ошибка TelegramBadRequest при отправке invoice</b>\n"
+                "🔴 <b>TelegramBadRequest при отправке invoice</b>\n"
                 f"Пользователь: <code>{user_id}</code> @{username}\n"
                 f"Тариф: <code>{option_key}</code>\n"
                 f"Сумма: <b>{pay_amount_rub} ₽</b>\n"
@@ -477,8 +443,7 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
             ),
         )
         await callback.message.answer(
-            "Не удалось открыть оплату 😔\n"
-            "Попробуй ещё раз или выбери другую сумму.",
+            "Не удалось открыть оплату 😔\nПопробуй ещё раз или выбери другую сумму.",
             reply_markup=get_payment_error_keyboard(),
         )
 
@@ -493,8 +458,7 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
             ),
         )
         await callback.message.answer(
-            "Не удалось открыть оплату 😔\n"
-            "Попробуй ещё раз или выбери другую сумму.",
+            "Не удалось открыть оплату 😔\nПопробуй ещё раз или выбери другую сумму.",
             reply_markup=get_payment_error_keyboard(),
         )
 
@@ -510,13 +474,12 @@ async def topup_custom_start(callback: CallbackQuery, state: FSMContext) -> None
     username = callback.from_user.username or "—"
 
     await callback.message.edit_text(
-        "Введи сумму пополнения в рублях (от 100 до 10 000), только число.\n\n"
+        "Введи сумму пополнения в рублях (от 49 до 10 000), только число.\n\n"
         "Например: 500"
     )
     await state.set_state(TopupStates.waiting_for_custom_amount)
     await callback.answer()
 
-    # Логируем переход к вводу произвольной суммы
     await send_admin_log(
         bot,
         (
@@ -532,10 +495,9 @@ async def topup_custom_amount(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id
     username = message.from_user.username or "—"
 
-    raw = message.text.replace(" ", "")
+    raw = (message.text or "").replace(" ", "")
     if not raw.isdigit():
         await message.answer("Пожалуйста, отправь сумму цифрами, например: 500")
-
         await send_admin_log(
             bot,
             (
@@ -547,9 +509,8 @@ async def topup_custom_amount(message: Message, state: FSMContext) -> None:
         return
 
     amount_rub = int(raw)
-    if amount_rub < 100 or amount_rub > 10_000:
-        await message.answer("Сумма должна быть от 100 до 10 000 ₽. Попробуй ещё раз.")
-
+    if amount_rub < 49 or amount_rub > 10_000:
+        await message.answer("Сумма должна быть от 49 до 10 000 ₽. Попробуй ещё раз.")
         await send_admin_log(
             bot,
             (
@@ -600,7 +561,6 @@ async def topup_custom_amount(message: Message, state: FSMContext) -> None:
 
     await state.clear()
 
-    # Логируем создание инвойса с произвольной суммой
     await send_admin_log(
         bot,
         (
@@ -624,10 +584,6 @@ async def process_pre_checkout(
     pre_checkout_query: PreCheckoutQuery,
     bot: Bot,
 ) -> None:
-    """
-    Обязательный шаг для платежей Telegram:
-    на каждый PreCheckoutQuery нужно ответить answerPreCheckoutQuery.
-    """
     payload = pre_checkout_query.invoice_payload
     total_amount = pre_checkout_query.total_amount
     currency = pre_checkout_query.currency
@@ -636,8 +592,8 @@ async def process_pre_checkout(
     user_id = user.id
 
     order_info = pre_checkout_query.order_info
-    email = None
-    phone_number = None
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
     shipping_address = None
 
     if order_info is not None:
@@ -645,7 +601,6 @@ async def process_pre_checkout(
         phone_number = getattr(order_info, "phone_number", None)
         shipping_address = getattr(order_info, "shipping_address", None)
 
-    # Логируем pre-checkout (по сути "чек до подтверждения")
     amount_rub = total_amount / 100.0
 
     await send_admin_log(
@@ -666,13 +621,9 @@ async def process_pre_checkout(
         await bot.answer_pre_checkout_query(
             pre_checkout_query.id,
             ok=False,
-            error_message=(
-                "Платёж не прошёл.\n"
-                "Попробуй ещё раз или выбери другую сумму."
-            ),
+            error_message="Платёж не прошёл.\nПопробуй ещё раз или выбери другую сумму.",
         )
 
-        # Логируем отказ pre-checkout
         await send_admin_log(
             bot,
             (
@@ -696,7 +647,6 @@ async def successful_payment_handler(message: Message) -> None:
     payment: SuccessfulPayment = message.successful_payment
     payload = payment.invoice_payload
 
-    # Обрабатываем только пополнение баланса
     if not payload.startswith("balance_topup"):
         return
 
@@ -737,12 +687,8 @@ async def successful_payment_handler(message: Message) -> None:
         f"Текущий баланс: {new_balance} ₽"
     )
 
-    await message.answer(
-        text,
-        reply_markup=get_after_success_keyboard(),
-    )
+    await message.answer(text, reply_markup=get_after_success_keyboard())
 
-    # Лог успешного пополнения "как в чеке"
     total_amount_rub = payment.total_amount / 100.0
 
     await send_admin_log(
@@ -772,13 +718,11 @@ async def payment_failed_message(callback: CallbackQuery) -> None:
     bot = callback.bot
 
     await callback.message.answer(
-        "Платёж не прошёл.\n"
-        "Попробуй ещё раз или выбери другую сумму.",
+        "Платёж не прошёл.\nПопробуй ещё раз или выбери другую сумму.",
         reply_markup=get_payment_error_keyboard(),
     )
     await callback.answer()
 
-    # Логируем факт показа сообщения о неуспешном платеже
     await send_admin_log(
         bot,
         (
