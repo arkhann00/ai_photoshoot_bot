@@ -32,7 +32,7 @@ ADM_GROUP_ID = -5075627878
 PAYMENT_PROVIDER_TOKEN = "390540012:LIVE:84036"
 
 # ✅ Минимальная сумма пополнения (из-за ограничения Telegram/провайдера)
-MIN_TOPUP_RUB = 50
+MIN_TOPUP_RUB = 105
 
 # Тарифы генерации по количеству фото (шт -> ₽)
 PHOTO_PACK_PRICES_RUB: Dict[int, int] = {
