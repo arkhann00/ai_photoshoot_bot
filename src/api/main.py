@@ -539,7 +539,7 @@ async def generate_photoshoot_from_upload(
 # -------------------------------------------------------------------
 
 
-@app.get("/api/admin/users", response_model=AdminUsersPageResponse)
+
 async def admin_list_users(
     page: int = Query(0, ge=0),
     page_size: int = Query(20, ge=1, le=100),
@@ -679,6 +679,35 @@ async def admin_change_user_balance(
         created_at=created_at_str,
     )
 
+# src/api/main.py
+
+from typing import List
+
+@app.get("/api/admin/users/search", response_model=List[AdminUserResponse])
+async def admin_search_users_endpoint(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(50, ge=1, le=200),
+    user: CurrentUser = Depends(get_current_user),
+) -> List[AdminUserResponse]:
+    ensure_admin(user)
+
+    users = await search_users(q, limit=limit)
+
+    result: List[AdminUserResponse] = []
+    for u in users:
+        created_at_str = u.created_at.isoformat() if getattr(u, "created_at", None) else None
+        result.append(
+            AdminUserResponse(
+                telegram_id=u.telegram_id,
+                username=u.username,
+                balance=int(u.balance or 0),
+                photoshoot_credits=int(u.photoshoot_credits or 0),
+                is_admin=bool(getattr(u, "is_admin", False)),
+                created_at=created_at_str,
+            )
+        )
+
+    return result
 
 @app.get("/api/admin/report", response_model=AdminReportResponse)
 async def admin_report(

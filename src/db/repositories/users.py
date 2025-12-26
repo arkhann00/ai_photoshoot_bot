@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy import BigInteger
 from sqlalchemy import delete  # noqa: F401 (оставлено для совместимости)
 from sqlalchemy.orm import load_only
@@ -194,20 +194,52 @@ async def get_users_page(page: int = 0, page_size: int = 10) -> tuple[list[User]
     return users, int(total or 0)
 
 
-async def search_users(query: str, limit: int = 20) -> list[User]:
-    q = query.strip()
+async def search_users(query: str, limit: int = 50) -> list[User]:
+    """
+    Поиск пользователей по:
+    - telegram_id (если ввели число) — точное совпадение
+    - username (частичное совпадение, case-insensitive), можно вводить с @
+    - если строка содержит цифры (но не чисто число) — попробуем также искать по telegram_id как подстроке
+    """
+    q_raw = (query or "").strip()
+    if not q_raw:
+        return []
+
+    q = q_raw
+    if q.startswith("@"):
+        q = q[1:].strip()
+
     async with async_session() as session:
+        # 1) Чисто число => ищем по telegram_id
         if q.isdigit():
             telegram_id = int(q)
-            result = await session.execute(select(User).where(User.telegram_id == telegram_id))
-            return list(result.scalars().all())
+            res = await session.execute(
+                select(User)
+                .where(User.telegram_id == telegram_id)
+                .limit(limit)
+            )
+            return list(res.scalars().all())
 
-        if q.startswith("@"):
-            q = q[1:]
+        q_lower = q.lower()
 
-        result = await session.execute(select(User).where(func.lower(User.username) == q.lower()).limit(limit))
-        return list(result.scalars().all())
+        conditions = []
 
+        # 2) username частично (case-insensitive)
+        # func.lower(User.username) вернет NULL для NULL-ов — это ок
+        conditions.append(func.lower(User.username).like(f"%{q_lower}%"))
+
+        # 3) если есть цифры — добавим поиск по telegram_id как строке (опционально, но удобно)
+        if any(ch.isdigit() for ch in q):
+            conditions.append(cast(User.telegram_id, String).like(f"%{q}%"))
+
+        stmt = (
+            select(User)
+            .where(or_(*conditions))
+            .order_by(User.created_at.desc())
+            .limit(limit)
+        )
+        res = await session.execute(stmt)
+        return list(res.scalars().all())
 
 async def change_user_credits(telegram_id: int, delta: int) -> Optional[User]:
     async with async_session() as session:

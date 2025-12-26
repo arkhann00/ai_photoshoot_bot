@@ -31,24 +31,23 @@ ADM_GROUP_ID = -5075627878
 
 PAYMENT_PROVIDER_TOKEN = "390540012:LIVE:84036"
 
-# ✅ Минимальная сумма пополнения (из-за ограничения Telegram/провайдера)
+# ✅ Минимальная сумма пополнения
 MIN_TOPUP_RUB = 99
 
 # Тарифы генерации по количеству фото (шт -> ₽)
 PHOTO_PACK_PRICES_RUB: Dict[int, int] = {
-    1: 49,
-    2: 80,
-    3: 100,
-    5: 125,
-    10: 200,
+    2: 99,
+    3: 119,
+    5: 149,
+    10: 199,
 }
 
-# Пакеты пополнения: callback_data -> сумма_руб (и платёж, и зачисление)
+# Пакеты пополнения: callback_data -> сумма_руб
 TOPUP_OPTIONS: Dict[str, int] = {
     "topup_99": 99,
-    "topup_100": 100,
-    "topup_125": 125,
-    "topup_200": 200,
+    "topup_119": 119,
+    "topup_149": 149,
+    "topup_199": 199,
 }
 
 TAX_SYSTEM_CODE = 1
@@ -109,14 +108,10 @@ async def format_balance_message(telegram_id: int) -> str:
 def get_balance_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(
-                text="Минимальное пополнение — 99 ₽",
-                callback_data="topup_99"
-            )],
-            [InlineKeyboardButton(text="Пополнить: 3 фото — 100 ₽", callback_data="topup_100")],
-            [InlineKeyboardButton(text="Пополнить: 5 фото — 125 ₽", callback_data="topup_125")],
-            [InlineKeyboardButton(text="Пополнить: 10 фото — 200 ₽", callback_data="topup_200")],
-            [InlineKeyboardButton(text="Другая сумма", callback_data="topup_custom")],
+            [InlineKeyboardButton(text="Пополнить: 2 фото — 99 ₽", callback_data="topup_99")],
+            [InlineKeyboardButton(text="Пополнить: 3 фото — 119 ₽", callback_data="topup_119")],
+            [InlineKeyboardButton(text="Пополнить: 5 фото — 149 ₽", callback_data="topup_149")],
+            [InlineKeyboardButton(text="Пополнить: 10 фото — 199 ₽", callback_data="topup_199")],
             [InlineKeyboardButton(text="Промокод", callback_data="promo_code")],
             [InlineKeyboardButton(text="Главное меню", callback_data="back_to_main_menu")],
         ]

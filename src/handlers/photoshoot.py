@@ -758,32 +758,9 @@ async def make_photoshoot(callback: CallbackQuery, state: FSMContext):
 
 
 def get_insufficient_balance_keyboard() -> InlineKeyboardMarkup:
-    """
-    Кнопки:
-    - Пополнить на 49 ₽ (создаёт инвойс на 49 ₽)
-    - Другие варианты пополнения (открывает экран Баланса)
-    - Вернуться в главное меню
-    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Пополнить на 49 ₽",
-                    callback_data="quick_topup_49",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Другие варианты пополнения",
-                    callback_data="balance",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Вернуться в главное меню",
-                    callback_data="back_to_main_menu",
-                )
-            ],
+            [InlineKeyboardButton(text="Пополнить баланс", callback_data="balance")],
         ]
     )
 
@@ -1021,12 +998,12 @@ async def use_avatar(callback: CallbackQuery, state: FSMContext):
         if not can_pay:
             await state.update_data(is_generating=False)
             await state.set_state(MainStates.making_photoshoot_failed)
-            text = (
-                "Недостаточно средств на балансе.\n"
-                f"Стоимость одной фотосессии — <b>{PHOTOSHOOT_PRICE} ₽</b>.\n\n"
-                "Пополнить баланс прямо сейчас?"
+
+            await callback.message.answer(
+                "Недостаточно средств на балансе 😔\n"
+                "Нажми кнопку ниже, чтобы пополнить баланс.",
+                reply_markup=get_insufficient_balance_keyboard(),
             )
-            await callback.message.answer(text, reply_markup=get_insufficient_balance_keyboard())
             await callback.answer()
             return
 
@@ -1085,12 +1062,12 @@ async def handle_selfie(message: Message, state: FSMContext):
         if not can_pay:
             await state.update_data(is_generating=False)
             await state.set_state(MainStates.making_photoshoot_failed)
-            text = (
-                "Недостаточно средств на балансе.\n"
-                f"Стоимость одной фотосессии — <b>{PHOTOSHOOT_PRICE} ₽</b>.\n\n"
-                "Пополнить баланс прямо сейчас?"
+
+            await message.answer(
+                "Недостаточно средств на балансе 😔\n"
+                "Нажми кнопку ниже, чтобы пополнить баланс.",
+                reply_markup=get_insufficient_balance_keyboard(),
             )
-            await message.answer(text, reply_markup=get_insufficient_balance_keyboard())
             return
     avatar_update_mode = data.get("avatar_update_mode")
     current_avatar = await get_user_avatar(message.from_user.id)
