@@ -1,6 +1,7 @@
 # src/handlers/balance.py
 
 import json
+from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
 
 from aiogram import Bot, F, Router
@@ -26,6 +27,9 @@ from src.db import (
 router = Router()
 
 ADM_GROUP_ID = -5075627878
+
+# ✅ Чат для логов пополнений/ошибок
+PAYMENTS_LOG_CHAT_ID = -5138363601
 
 PAYMENT_PROVIDER_TOKEN = "390540012:LIVE:84036"
 
@@ -57,7 +61,7 @@ TOPUP_PACK_PHOTOS: Dict[str, int] = {
 }
 
 # ✅ Сколько рублей зачисляем на баланс за пакет
-# ВАЖНО: для 2 фотосессий ты попросил начислять 99 ₽ (а не 98)
+# ВАЖНО: для 2 фотосессий начисляем 99 ₽ (а не 98)
 TOPUP_PACK_CREDIT_RUB: Dict[str, int] = {
     "topup_99": 99,  # 2 фотосессии, но зачисляем 99 ₽
     "topup_119": 3 * int(PHOTOSHOOT_PRICE),
@@ -71,15 +75,59 @@ PAYMENT_MODE = "full_payment"
 PAYMENT_SUBJECT = "service"
 
 
+def _format_dt(dt: Optional[datetime]) -> str:
+    """
+    Дата для логов. Если dt нет — берём текущее UTC.
+    """
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    # компактно и стабильно
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_user(telegram_id: int, username: Optional[str]) -> str:
+    u = (username or "—").strip()
+    if u and not u.startswith("@") and u != "—":
+        u = f"@{u}"
+    if u == "@—":
+        u = "—"
+    return f"{telegram_id} {u}".strip()
+
+
 async def send_admin_log(bot: Bot, text: str) -> None:
+        return
+
+
+async def send_payment_log(
+    bot: Bot,
+    *,
+    telegram_id: int,
+    username: Optional[str],
+    dt: Optional[datetime],
+    amount_rub: int,
+    error: Optional[str] = None,
+) -> None:
+    """
+    Логи пополнений/ошибок в отдельный чат.
+    Формат:
+      <юзер> - <дата> - <сумма>
+      <юзер> - <дата> - <сумма> - ERROR: ...
+    """
     try:
-        await bot.send_message(
-            chat_id=ADM_GROUP_ID,
-            text=text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
+        user_str = _format_user(int(telegram_id), username)
+        date_str = _format_dt(dt)
+        base = f"{user_str} - {date_str} - {int(amount_rub)} ₽"
+        if error:
+            # обрезаем, чтобы не улетать в километровые логи
+            err = str(error).replace("\n", " ").strip()
+            if len(err) > 400:
+                err = err[:400] + "…"
+            base = f"{base} - ERROR: {err}"
+        await bot.send_message(chat_id=PAYMENTS_LOG_CHAT_ID, text=base)
     except Exception:
+        # никогда не валим оплату/инвойсы из-за логов
         return
 
 
@@ -102,15 +150,7 @@ async def add_to_balance_rub(telegram_id: int, amount_rub: int) -> int:
 
 async def format_balance_message(telegram_id: int) -> str:
     balance_rub = await get_balance_rub(telegram_id)
-
-    tariffs = "\n".join(
-        f"• {cnt} фото — {price} ₽"
-        for cnt, price in sorted(PHOTO_PACK_PRICES_RUB.items(), key=lambda x: x[0])
-    )
-
-    return (
-        f"Доступное количество генераций: {int(balance_rub/49)}"
-    )
+    return f"Доступное количество генераций: {int(balance_rub / 49)}"
 
 
 def get_balance_keyboard() -> InlineKeyboardMarkup:
@@ -196,13 +236,13 @@ def _resolve_pack_from_payload(payload: str, paid_amount_rub: int) -> Tuple[Opti
 
 
 # =====================================================================
-# Быстрое пополнение (оставлено для совместимости с остальным кодом)
+# Быстрое пополнение (оставлено для совместимости)
 # =====================================================================
 
 async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
     """
     ⚠️ Имя оставлено для совместимости.
-    Фактически отправляет инвойс на пакет 99 ₽ (2 фото),
+    Отправляет инвойс на пакет 99 ₽ (2 фото),
     и зачисляет на баланс 99 ₽ (как ты попросил).
     """
     bot = callback.bot
@@ -266,44 +306,27 @@ async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
             ),
         )
 
-    except TelegramForbiddenError as e:
+    except (TelegramForbiddenError, TelegramBadRequest, Exception) as e:
+        # ✅ лог ошибки в отдельный чат
+        await send_payment_log(
+            bot,
+            telegram_id=user_id,
+            username=username,
+            dt=getattr(callback.message, "date", None),
+            amount_rub=pay_amount_rub,
+            error=str(e),
+        )
+
+        # админ-лог оставим
         await send_admin_log(
             bot,
             (
-                "🔴 <b>Quick topup: Forbidden (бот не может написать в ЛС)</b>\n"
+                "🔴 <b>Quick topup: ошибка при отправке invoice</b>\n"
                 f"Пользователь: <code>{user_id}</code> @{username}\n"
                 f"Ошибка: <code>{e}</code>"
             ),
         )
-        await callback.message.answer(
-            "Чтобы оплатить, открой бота в личных сообщениях и нажми /start, затем повтори попытку.",
-            reply_markup=get_payment_error_keyboard(),
-        )
 
-    except TelegramBadRequest as e:
-        await send_admin_log(
-            bot,
-            (
-                "🔴 <b>Quick topup: TelegramBadRequest при отправке invoice</b>\n"
-                f"Пользователь: <code>{user_id}</code> @{username}\n"
-                f"Ошибка: <code>{e}</code>\n"
-                f"provider_data: <code>{provider_data}</code>"
-            ),
-        )
-        await callback.message.answer(
-            "Не удалось открыть оплату 😔\nПопробуй ещё раз или выбери другую сумму.",
-            reply_markup=get_payment_error_keyboard(),
-        )
-
-    except Exception as e:
-        await send_admin_log(
-            bot,
-            (
-                "🔴 <b>Quick topup: неизвестная ошибка</b>\n"
-                f"Пользователь: <code>{user_id}</code> @{username}\n"
-                f"Ошибка: <code>{e}</code>"
-            ),
-        )
         await callback.message.answer(
             "Не удалось открыть оплату 😔\nПопробуй ещё раз или выбери другую сумму.",
             reply_markup=get_payment_error_keyboard(),
@@ -317,23 +340,12 @@ async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "balance")
 async def open_balance(callback: CallbackQuery) -> None:
     telegram_id = callback.from_user.id
-    username = callback.from_user.username or "—"
-    bot = callback.bot
 
     text = await format_balance_message(telegram_id)
-    current_balance = await get_balance_rub(telegram_id)
-
     await callback.message.edit_text(text, reply_markup=get_balance_keyboard())
     await callback.answer()
 
-    await send_admin_log(
-        bot,
-        (
-            "💼 <b>Открыт раздел «Баланс»</b>\n"
-            f"Пользователь: <code>{telegram_id}</code> @{username}\n"
-            f"Доступное количество генераций: <b>{current_balance/49}</b>"
-        ),
-    )
+    # ❌ НЕ логируем "заход в баланс" (ни в админ-чат, ни в чат платежей)
 
 
 # =====================================================================
@@ -363,7 +375,6 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
         )
     ]
 
-    # ✅ payload храним как ключ пакета
     payload = f"balance_topup:{option_key}"
 
     provider_data = build_provider_data(
@@ -415,49 +426,27 @@ async def choose_topup_package(callback: CallbackQuery) -> None:
             ),
         )
 
-    except TelegramForbiddenError as e:
-        await send_admin_log(
+    except (TelegramForbiddenError, TelegramBadRequest, Exception) as e:
+        # ✅ лог ошибки в отдельный чат
+        await send_payment_log(
             bot,
-            (
-                "🔴 <b>Не удалось отправить invoice в личку (Forbidden)</b>\n"
-                f"Пользователь: <code>{user_id}</code> @{username}\n"
-                f"Пакет: <code>{option_key}</code>\n"
-                f"Ошибка: <code>{e}</code>"
-            ),
-        )
-        await callback.message.answer(
-            "Чтобы оплатить, открой бота в личных сообщениях и нажми «Баланс» → выбери сумму.\n"
-            "Если бот ещё не открыт — нажми /start в личке.",
-            reply_markup=get_payment_error_keyboard(),
+            telegram_id=user_id,
+            username=username,
+            dt=getattr(callback.message, "date", None),
+            amount_rub=pay_amount_rub,
+            error=str(e),
         )
 
-    except TelegramBadRequest as e:
         await send_admin_log(
             bot,
             (
-                "🔴 <b>TelegramBadRequest при отправке invoice</b>\n"
+                "🔴 <b>Ошибка при отправке invoice</b>\n"
                 f"Пользователь: <code>{user_id}</code> @{username}\n"
                 f"Пакет: <code>{option_key}</code>\n"
-                f"Сумма: <b>{pay_amount_rub} ₽</b>\n"
-                f"provider_data: <code>{provider_data}</code>\n"
                 f"Ошибка: <code>{e}</code>"
             ),
-        )
-        await callback.message.answer(
-            "Не удалось открыть оплату 😔\nПопробуй ещё раз или выбери другую сумму.",
-            reply_markup=get_payment_error_keyboard(),
         )
 
-    except Exception as e:
-        await send_admin_log(
-            bot,
-            (
-                "🔴 <b>Неизвестная ошибка при отправке invoice</b>\n"
-                f"Пользователь: <code>{user_id}</code> @{username}\n"
-                f"Пакет: <code>{option_key}</code>\n"
-                f"Ошибка: <code>{e}</code>"
-            ),
-        )
         await callback.message.answer(
             "Не удалось открыть оплату 😔\nПопробуй ещё раз или выбери другую сумму.",
             reply_markup=get_payment_error_keyboard(),
@@ -475,42 +464,27 @@ async def process_pre_checkout(
 ) -> None:
     payload = pre_checkout_query.invoice_payload
     total_amount = pre_checkout_query.total_amount
-    currency = pre_checkout_query.currency
     user = pre_checkout_query.from_user
     username = user.username or "—"
     user_id = user.id
 
-    order_info = pre_checkout_query.order_info
-    email: Optional[str] = None
-    phone_number: Optional[str] = None
-    shipping_address = None
+    paid_amount_rub = int(total_amount // 100)
 
-    if order_info is not None:
-        email = getattr(order_info, "email", None)
-        phone_number = getattr(order_info, "phone_number", None)
-        shipping_address = getattr(order_info, "shipping_address", None)
-
-    amount_rub = total_amount / 100.0
-
-    await send_admin_log(
-        bot,
-        (
-            "🧾 <b>PreCheckout по пополнению баланса</b>\n"
-            f"Пользователь: <code>{user_id}</code> @{username}\n"
-            f"Сумма (total_amount): <b>{total_amount}</b> (≈ {amount_rub:.2f} {currency})\n"
-            f"Валюта: <b>{currency}</b>\n"
-            f"payload: <code>{payload}</code>\n"
-            f"email: <code>{email or '—'}</code>\n"
-            f"phone_number: <code>{phone_number or '—'}</code>\n"
-            f"shipping_address: <code>{str(shipping_address) if shipping_address else '—'}</code>"
-        ),
-    )
-
+    # payload не наш — отклоняем и логируем как ошибку
     if not payload.startswith("balance_topup:"):
         await bot.answer_pre_checkout_query(
             pre_checkout_query.id,
             ok=False,
             error_message="Платёж не прошёл.\nПопробуй ещё раз или выбери другую сумму.",
+        )
+
+        await send_payment_log(
+            bot,
+            telegram_id=user_id,
+            username=username,
+            dt=datetime.now(timezone.utc),
+            amount_rub=paid_amount_rub,
+            error=f"Invalid payload: {payload}",
         )
         return
 
@@ -529,73 +503,105 @@ async def successful_payment_handler(message: Message) -> None:
     if not payload.startswith("balance_topup:"):
         return
 
-    paid_amount_rub = payment.total_amount // 100
+    paid_amount_rub = int(payment.total_amount // 100)
 
     telegram_id = message.from_user.id
     username = message.from_user.username or "—"
     bot = message.bot
 
-    option_key, photos_count, credited_amount_rub = _resolve_pack_from_payload(payload, paid_amount_rub)
-    new_balance = await add_to_balance_rub(telegram_id, credited_amount_rub)
+    try:
+        option_key, photos_count, credited_amount_rub = _resolve_pack_from_payload(payload, paid_amount_rub)
+        new_balance = await add_to_balance_rub(telegram_id, credited_amount_rub)
 
-    REF_TOPUP_PERCENT = 5
+        # ✅ Лог успешного пополнения в отдельный чат
+        await send_payment_log(
+            bot,
+            telegram_id=telegram_id,
+            username=username,
+            dt=getattr(message, "date", None),
+            amount_rub=paid_amount_rub,
+            error=None,
+        )
 
-    user_db = await get_user_by_telegram_id(telegram_id)
-    referrer_id = getattr(user_db, "referrer_id", None)
+        REF_TOPUP_PERCENT = 5
 
-    if referrer_id:
-        # ✅ Процент считаем от ОПЛАТЫ (реальные деньги), не от бонусного зачисления
-        reward = int(paid_amount_rub * REF_TOPUP_PERCENT / 100)
-        if reward > 0:
-            await add_referral_earnings(int(referrer_id), reward)
+        user_db = await get_user_by_telegram_id(telegram_id)
+        referrer_id = getattr(user_db, "referrer_id", None)
 
-            # ✅ Сообщение пригласителю о начислении
-            try:
-                ref_msg = (
-                    "🎉 Реферальное начисление!\n\n"
-                    f"Твой реферал пополнил баланс на {paid_amount_rub} ₽.\n"
-                    f"Тебе начислено: {reward} ₽ ✅"
+        if referrer_id:
+            # процент считаем от ОПЛАТЫ
+            reward = int(paid_amount_rub * REF_TOPUP_PERCENT / 100)
+            if reward > 0:
+                await add_referral_earnings(int(referrer_id), reward)
+
+                # сообщение пригласителю
+                try:
+                    ref_msg = (
+                        "🎉 Реферальное начисление!\n\n"
+                        f"Твой реферал пополнил баланс на {paid_amount_rub} ₽.\n"
+                        f"Тебе начислено: {reward} ₽ ✅"
+                    )
+                    await bot.send_message(chat_id=int(referrer_id), text=ref_msg)
+                except (TelegramForbiddenError, TelegramBadRequest):
+                    pass
+                except Exception:
+                    pass
+
+                await send_admin_log(
+                    bot,
+                    (
+                        "🤝 <b>Реферальное начисление с пополнения</b>\n"
+                        f"Реферал: <code>{telegram_id}</code> @{username}\n"
+                        f"Пригласитель: <code>{referrer_id}</code>\n"
+                        f"Оплата: <b>{paid_amount_rub} ₽</b>\n"
+                        f"Начислено пригласителю: <b>{reward} ₽</b>"
+                    ),
                 )
-                await bot.send_message(chat_id=int(referrer_id), text=ref_msg)
-            except (TelegramForbiddenError, TelegramBadRequest):
-                pass
-            except Exception:
-                pass
 
-            await send_admin_log(
-                bot,
-                (
-                    "🤝 <b>Реферальное начисление с пополнения</b>\n"
-                    f"Реферал: <code>{telegram_id}</code> @{username}\n"
-                    f"Пригласитель: <code>{referrer_id}</code>\n"
-                    f"Оплата: <b>{paid_amount_rub} ₽</b>\n"
-                    f"Начислено пригласителю: <b>{reward} ₽</b>"
-                ),
-            )
+        text = (
+            "Оплата прошла успешно!\n"
+            f"Вы оплатили: {paid_amount_rub} ₽.\n"
+            f"Текущий баланс: {int(new_balance / 49)} фото"
+        )
+        await message.answer(text, reply_markup=get_after_success_keyboard())
 
-    pack_info = f"{photos_count} фотосессии" if photos_count else "пакет не определён"
-    text = (
-        "Оплата прошла успешно!\n"
-        f"Вы оплатили: {paid_amount_rub} ₽.\n"
-        f"Текущий баланс: {int(new_balance/49)} фото"
-    )
+        await send_admin_log(
+            bot,
+            (
+                "✅ <b>Успешное пополнение баланса</b>\n"
+                f"Пользователь: <code>{telegram_id}</code> @{username}\n"
+                f"Пакет: <code>{option_key or 'unknown'}</code>\n"
+                f"Оплачено: <b>{paid_amount_rub} ₽</b>\n"
+                f"Зачислено на баланс: <b>{credited_amount_rub} ₽</b>\n"
+                f"Новый баланс: <b>{new_balance} ₽</b>\n"
+                f"payload: <code>{payload}</code>\n"
+                f"telegram_payment_charge_id: <code>{payment.telegram_payment_charge_id}</code>\n"
+                f"provider_payment_charge_id: <code>{payment.provider_payment_charge_id}</code>"
+            ),
+        )
 
-    await message.answer(text, reply_markup=get_after_success_keyboard())
+    except Exception as e:
+        # ✅ лог ошибки в отдельный чат
+        await send_payment_log(
+            bot,
+            telegram_id=telegram_id,
+            username=username,
+            dt=getattr(message, "date", None),
+            amount_rub=paid_amount_rub,
+            error=str(e),
+        )
 
-    await send_admin_log(
-        bot,
-        (
-            "✅ <b>Успешное пополнение баланса</b>\n"
-            f"Пользователь: <code>{telegram_id}</code> @{username}\n"
-            f"Пакет: <code>{option_key or 'unknown'}</code>\n"
-            f"Оплачено: <b>{paid_amount_rub} ₽</b>\n"
-            f"Зачислено на баланс: <b>{credited_amount_rub} ₽</b>\n"
-            f"Новый баланс: <b>{new_balance} ₽</b>\n"
-            f"payload: <code>{payload}</code>\n"
-            f"telegram_payment_charge_id: <code>{payment.telegram_payment_charge_id}</code>\n"
-            f"provider_payment_charge_id: <code>{payment.provider_payment_charge_id}</code>"
-        ),
-    )
+        # и в админ-чат (как раньше)
+        await send_admin_log(
+            bot,
+            (
+                "🔴 <b>Ошибка обработки successful_payment</b>\n"
+                f"Пользователь: <code>{telegram_id}</code> @{username}\n"
+                f"Оплата: <b>{paid_amount_rub} ₽</b>\n"
+                f"payload: <code>{payload}</code>\n"
+                f"Ошибка: <code>{e}</code>"
+            ),
+        )
 
 
 # =====================================================================
@@ -613,6 +619,16 @@ async def payment_failed_message(callback: CallbackQuery) -> None:
         reply_markup=get_payment_error_keyboard(),
     )
     await callback.answer()
+
+    # Здесь суммы нет, но это тоже ошибка UX — залогируем как 0 ₽
+    await send_payment_log(
+        bot,
+        telegram_id=user_id,
+        username=username,
+        dt=getattr(callback.message, "date", None),
+        amount_rub=0,
+        error="payment_failed_show_message",
+    )
 
     await send_admin_log(
         bot,
