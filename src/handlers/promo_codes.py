@@ -1,103 +1,94 @@
-# src/db/repositories/promo_codes.py
 from __future__ import annotations
 
-from typing import Tuple
-
-from sqlalchemy import select, func
-from sqlalchemy.exc import SQLAlchemyError
+from aiogram import Router, F
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
 
 from src.constants import PHOTOSHOOT_PRICE
-from src.db.session import async_session
-from src.db.models import User, PromoCode, PromoCodeRedemption  # <-- подстрой имена моделей под свои
+from src.keyboards import get_start_keyboard
+from src.db.repositories.promo_codes import redeem_promo_code_for_user
+from src.handlers.balance import get_balance_keyboard
+
+router = Router()
 
 
-async def redeem_promo_code_for_user(telegram_id: int, code: str) -> Tuple[str, int, int]:
-    """
-    Возвращает: (status, grant, new_balance)
-      status:
-        - "invalid"        промокод не найден / неактивен
-        - "already_used"   этот пользователь уже применял
-        - "ok"             успешно применён
-      grant: сколько генераций выдали по промокоду
-      new_balance: новый баланс пользователя (₽)
+class PromoCodeStates(StatesGroup):
+    waiting_for_code = State()
 
-    ВАЖНО: после ПЕРВОГО успешного применения промокод деактивируется глобально.
-    """
 
-    code_norm = (code or "").strip().upper()
-    if not code_norm:
-        return "invalid", 0, 0
+def _promo_cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="promo_code_cancel")]]
+    )
 
-    async with async_session() as session:
-        try:
-            # 1) Лочим промокод строкой (защита от одновременного применения двумя юзерами)
-            promo: PromoCode | None = (
-                await session.scalar(
-                    select(PromoCode)
-                    .where(func.upper(PromoCode.code) == code_norm)
-                    .with_for_update()
-                )
-            )
 
-            # Баланс нужен для ответов (даже если промо невалидно)
-            user: User | None = await session.scalar(
-                select(User).where(User.telegram_id == telegram_id).with_for_update()
-            )
-            if user is None:
-                user = User(telegram_id=telegram_id, balance=0, photoshoot_credits=0)
-                session.add(user)
-                await session.flush()
+def _normalize_code(code: str) -> str:
+    return (code or "").strip().upper()
 
-            if promo is None:
-                await session.rollback()
-                return "invalid", 0, int(user.balance or 0)
 
-            # 2) Если этот пользователь уже применял — возвращаем already_used
-            already = await session.scalar(
-                select(func.count())
-                .select_from(PromoCodeRedemption)
-                .where(
-                    PromoCodeRedemption.promo_code_id == promo.id,
-                    PromoCodeRedemption.telegram_id == telegram_id,
-                )
-            )
-            if int(already or 0) > 0:
-                await session.rollback()
-                return "already_used", int(getattr(promo, "grant", 0) or 0), int(user.balance or 0)
+@router.callback_query(F.data == "promo_code")
+async def promo_code_entrypoint(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PromoCodeStates.waiting_for_code)
 
-            # 3) Если промокод уже выключен — для новых пользователей он "invalid"
-            if not bool(getattr(promo, "is_active", False)):
-                await session.rollback()
-                return "invalid", 0, int(user.balance or 0)
+    text = (
+        "Введи промокод одним сообщением.\n\n"
+        "Пример: `PROMO2025`\n\n"
+        "Чтобы отменить — нажми «Отмена»."
+    )
+    if cb.message:
+        await cb.message.answer(text, reply_markup=_promo_cancel_kb(), parse_mode="Markdown")
+    await cb.answer()
 
-            # 4) Начисляем
-            grant = int(getattr(promo, "grant", 0) or 0)
-            if grant <= 0:
-                # бессмысленный промокод — тоже считаем невалидным
-                await session.rollback()
-                return "invalid", 0, int(user.balance or 0)
 
-            credited_rub = int(PHOTOSHOOT_PRICE) * grant
-            user.balance = int(user.balance or 0) + credited_rub
+@router.callback_query(F.data == "promo_code_cancel")
+async def promo_code_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    if cb.message:
+        await cb.message.answer("Ок, отменил ввод промокода.", reply_markup=get_start_keyboard())
+    await cb.answer()
 
-            # 5) Фиксируем факт использования
-            session.add(
-                PromoCodeRedemption(
-                    promo_code_id=promo.id,
-                    telegram_id=telegram_id,
-                )
-            )
 
-            # ✅ 6) Ключевое: деактивируем промокод сразу после первого успешного применения
-            promo.is_active = False
+@router.message(PromoCodeStates.waiting_for_code, F.text)
+async def promo_code_process(message: Message, state: FSMContext) -> None:
+    tg_id = message.from_user.id if message.from_user else 0
+    if tg_id <= 0:
+        await message.answer("Не смог определить пользователя. Попробуй позже.")
+        return
 
-            await session.commit()
-            return "ok", grant, int(user.balance or 0)
+    code = _normalize_code(message.text or "")
+    if not code:
+        await message.answer("Промокод пустой. Введи код текстом.", reply_markup=_promo_cancel_kb())
+        return
 
-        except SQLAlchemyError:
-            await session.rollback()
-            # в случае ошибки БД лучше не "дарить" промокод
-            return "invalid", 0, 0
-        except Exception:
-            await session.rollback()
-            return "invalid", 0, 0
+    status, grant, new_balance = await redeem_promo_code_for_user(telegram_id=tg_id, code=code)
+
+    if status == "invalid":
+        await message.answer(
+            "Промокод не найден или недействителен.",
+            reply_markup=_promo_cancel_kb(),
+        )
+        return
+
+    if status == "already_used":
+        await message.answer(
+            f"Ты уже использовал этот промокод.\n"
+            f"Текущий баланс: {new_balance} ₽",
+            reply_markup=get_start_keyboard(),
+        )
+        await state.clear()
+        return
+
+    credited_rub = int(PHOTOSHOOT_PRICE) * int(grant)
+    await message.answer(
+        f"✅ Промокод применён!\n"
+        f"Начислено: {grant} генераций (= {credited_rub} ₽ на баланс).\n"
+        f"Текущий баланс: {new_balance} ₽",
+        reply_markup=get_start_keyboard(),
+    )
+    await state.clear()
+
+
+@router.message(PromoCodeStates.waiting_for_code)
+async def promo_code_non_text(message: Message) -> None:
+    await message.answer("Пришли промокод текстом (сообщением).", reply_markup=_promo_cancel_kb())
