@@ -109,7 +109,7 @@ async def format_balance_message(telegram_id: int) -> str:
     )
 
     return (
-        f"Доступное количество генераций: {balance_rub/49}"
+        f"Доступное количество генераций: {int(balance_rub/49)}"
     )
 
 
