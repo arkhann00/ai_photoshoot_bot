@@ -30,7 +30,7 @@ from src.keyboards import (
     back_to_main_menu_keyboard,
     get_avatar_choice_keyboard,
 )
-
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 router = Router()
 
 ADM_GROUP_ID = -5075627878
@@ -64,6 +64,12 @@ async def get_referrals_count(referrer_telegram_id: int) -> int:
         )
         return int(result.scalar_one_or_none() or 0)
 
+async def _get_existing_referrer_id(telegram_id: int) -> Optional[int]:
+    async with async_session() as session:
+        res = await session.execute(
+            select(User.referrer_id).where(User.telegram_id == telegram_id)
+        )
+        return res.scalar_one_or_none()
 
 def get_referral_partner_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
