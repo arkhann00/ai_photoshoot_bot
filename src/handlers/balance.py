@@ -577,8 +577,7 @@ async def successful_payment_handler(message: Message) -> None:
     text = (
         "Оплата прошла успешно!\n"
         f"Вы оплатили: {paid_amount_rub} ₽.\n"
-        f"На баланс зачислено: {credited_amount_rub} ₽ ({pack_info}).\n\n"
-        f"Текущий баланс: {new_balance} ₽"
+        f"Текущий баланс: {int(new_balance/49)} фото"
     )
 
     await message.answer(text, reply_markup=get_after_success_keyboard())
