@@ -82,8 +82,8 @@ async def promo_code_process(message: Message, state: FSMContext) -> None:
     credited_rub = int(PHOTOSHOOT_PRICE) * int(grant)
     await message.answer(
         f"✅ Промокод применён!\n"
-        f"Начислено: {grant} генераций (= {credited_rub} ₽ на баланс).\n"
-        f"Текущий баланс: {new_balance} ₽",
+        f"Начислено: {grant} генераций.\n"
+        f"Текущий баланс: {int(new_balance/49)} ₽",
         reply_markup=get_start_keyboard(),
     )
     await state.clear()
