@@ -109,10 +109,7 @@ async def format_balance_message(telegram_id: int) -> str:
     )
 
     return (
-        f"Ваш баланс: {balance_rub} ₽\n\n"
-        "Тарифы:\n"
-        f"{tariffs}\n\n"
-        f"Цена 1 фотосессии: {int(PHOTOSHOOT_PRICE)} ₽"
+        f"Доступное количество генераций: {balance_rub/49}"
     )
 
 
@@ -334,7 +331,7 @@ async def open_balance(callback: CallbackQuery) -> None:
         (
             "💼 <b>Открыт раздел «Баланс»</b>\n"
             f"Пользователь: <code>{telegram_id}</code> @{username}\n"
-            f"Текущий баланс: <b>{current_balance} ₽</b>"
+            f"Доступное количество генераций: <b>{current_balance/49}</b>"
         ),
     )
 
