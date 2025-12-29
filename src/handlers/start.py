@@ -409,15 +409,15 @@ async def check_subscription(callback: CallbackQuery):
         )
         return
 
-    # Пользователь подписан — начисляем 3 генерации и отправляем в главное меню
+    # Пользователь подписан — начисляем 2 генерации и отправляем в главное меню
     try:
-        await add_photoshoot_topups(callback.from_user.id, 3)
+        await add_photoshoot_topups(callback.from_user.id, 2)
     except Exception:
         # не критично, продолжим без падения
         pass
 
     await callback.message.answer(
-        "Спасибо за подписку! Тебе начислены 3 генерации — добро пожаловать в главное меню.",
+        "Спасибо за подписку! Тебе начислены 2 генерации — добро пожаловать в главное меню.",
         reply_markup=get_start_keyboard(),
     )
 
