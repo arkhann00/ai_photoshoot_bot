@@ -15,7 +15,7 @@ from aiogram.types import (
     PreCheckoutQuery,
     SuccessfulPayment,
 )
-
+from src.db.repositories.users import ensure_user_is_referral
 from src.constants import PHOTOSHOOT_PRICE
 from src.db import (
     add_referral_earnings,
@@ -76,6 +76,12 @@ TAX_SYSTEM_CODE = 1
 VAT_CODE = 1
 PAYMENT_MODE = "full_payment"
 PAYMENT_SUBJECT = "service"
+
+REF_TOPUP_PERCENT = 10  # 10% от суммы пополнения
+
+def _calc_ref_topup_reward(paid_amount_rub: int) -> int:
+    # 10% от оплаты, округляем до рубля
+    return max(1, int(round(int(paid_amount_rub) * REF_TOPUP_PERCENT / 100)))
 
 
 def _format_dt(dt: Optional[datetime]) -> str:
@@ -527,40 +533,44 @@ async def successful_payment_handler(message: Message) -> None:
             error=None,
         )
 
-        REF_TOPUP_PERCENT = 5
-
         user_db = await get_user_by_telegram_id(telegram_id)
         referrer_id = getattr(user_db, "referrer_id", None)
 
-        if referrer_id:
-            # процент считаем от ОПЛАТЫ
-            reward = int(paid_amount_rub * REF_TOPUP_PERCENT / 100)
-            if reward > 0:
-                await add_referral_earnings(int(referrer_id), reward)
+        # ✅ Реферальное начисление: 10% от суммы оплаты пригласившему
+        if referrer_id and int(referrer_id) != int(telegram_id):
+            reward = _calc_ref_topup_reward(paid_amount_rub)
 
-                # сообщение пригласителю
-                try:
-                    ref_msg = (
-                        "🎉 Реферальное начисление!\n\n"
-                        f"Твой реферал пополнил баланс на {paid_amount_rub} ₽.\n"
-                        f"Тебе начислено: {reward} ₽ ✅"
-                    )
-                    await bot.send_message(chat_id=int(referrer_id), text=ref_msg)
-                except (TelegramForbiddenError, TelegramBadRequest):
-                    pass
-                except Exception:
-                    pass
+            # начисляем в referral_earned_rub
+            await add_referral_earnings(int(referrer_id), int(reward))
 
-                await send_admin_log(
-                    bot,
-                    (
-                        "🤝 <b>Реферальное начисление с пополнения</b>\n"
-                        f"Реферал: <code>{telegram_id}</code> @{username}\n"
-                        f"Пригласитель: <code>{referrer_id}</code>\n"
-                        f"Оплата: <b>{paid_amount_rub} ₽</b>\n"
-                        f"Начислено пригласителю: <b>{reward} ₽</b>"
-                    ),
+            # пригласивший становится is_referral=true
+            try:
+                await ensure_user_is_referral(int(referrer_id))
+            except Exception:
+                pass
+
+            # сообщение пригласившему (оплатившему — ничего не говорим)
+            try:
+                ref_msg = (
+                    "💸 Реферальное начисление!\n\n"
+                    f"Твой реферал пополнил баланс на <b>{paid_amount_rub} ₽</b>.\n"
+                    f"Тебе начислено: <b>{reward} ₽</b> — это <b>{REF_TOPUP_PERCENT}%</b> от суммы ✅"
                 )
+                await bot.send_message(chat_id=int(referrer_id), text=ref_msg, parse_mode="HTML")
+            except (TelegramForbiddenError, TelegramBadRequest):
+                pass
+            except Exception:
+                pass
+
+            await send_admin_log(
+                bot,
+                (
+                    "🤝 <b>Реферальное начисление с пополнения</b>\n"
+                    f"Оплата: <b>{paid_amount_rub} ₽</b>\n"
+                    f"Процент: <b>{REF_TOPUP_PERCENT}%</b>\n"
+                    f"Начислено пригласителю: <b>{reward} ₽</b>"
+                ),
+            )
 
         text = (
             "Оплата прошла успешно!\n"

@@ -31,6 +31,10 @@ from src.keyboards import (
     get_avatar_choice_keyboard,
 )
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from src.db.repositories.users import (
+    ensure_user_is_referral,
+    grant_referral_click_bonus_if_needed,
+)
 router = Router()
 
 ADM_GROUP_ID = -5075627878
@@ -38,6 +42,74 @@ ADM_GROUP_ID = -5075627878
 CHANNEL_USERNAME = "photo_ai_studio"
 CHANNEL_URL = f"https://t.me/{CHANNEL_USERNAME}"
 
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram import Bot
+
+async def notify_referrer_about_click(
+    bot: Bot,
+    *,
+    referrer_id: int,
+    new_user_id: int,
+    new_username: str,
+    reward_rub: int,
+) -> None:
+    try:
+        u = (new_username or "—").strip()
+        if u and not u.startswith("@") and u != "—":
+            u = f"@{u}"
+        if u == "@—":
+            u = "—"
+
+        text = (
+            "👥 По твоей реферальной ссылке пришёл новый пользователь!\n\n"
+            f"Друг: <code>{new_user_id}</code> {u}\n"
+            f"Бонус за переход: <b>+{reward_rub} ₽</b> ✅"
+        )
+
+        await bot.send_message(
+            chat_id=referrer_id,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except (TelegramForbiddenError, TelegramBadRequest):
+        return
+    except Exception:
+        return
+        
+from typing import Optional
+from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+
+async def _notify_referrer_new_referral(
+    bot: Bot,
+    *,
+    referrer_id: int,
+    new_user_id: int,
+    new_username: str,
+) -> None:
+    try:
+        u = (new_username or "—").strip()
+        if u and not u.startswith("@") and u != "—":
+            u = f"@{u}"
+        if u == "@—":
+            u = "—"
+
+        text = (
+            "👥 У тебя новый реферал!\n\n"
+            f"Пользователь: <code>{new_user_id}</code> {u}"
+        )
+
+        await bot.send_message(
+            chat_id=referrer_id,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except (TelegramForbiddenError, TelegramBadRequest):
+        return
+    except Exception:
+        return
 
 def _get_webapp_url() -> str:
     return getattr(settings, "WEBAPP_URL", None) or "https://aiphotostudio.ru/"
@@ -235,6 +307,7 @@ async def _enter_photoshoot_waiting_photo(
         ),
     )
 
+from src.db.repositories.users import ensure_user_is_referral
 
 @router.message(CommandStart())
 async def command_start(message: Message, state: FSMContext):
@@ -248,15 +321,21 @@ async def command_start(message: Message, state: FSMContext):
 
     referrer_telegram_id, style_id_for_generation = _parse_start_payload(payload or "")
 
+    # защита от саморефералки
     if referrer_telegram_id == message.from_user.id:
         referrer_telegram_id = None
 
+    # важно: узнать, был ли реферер уже привязан ранее (чтобы не спамить и не начислять повторно)
+    existing_referrer_id = await _get_existing_referrer_id(message.from_user.id)
+
+    # создаём/обновляем пользователя + при первом переходе закрепляем referrer_id
     user = await get_or_create_user(
         telegram_id=message.from_user.id,
         username=message.from_user.username,
         referrer_telegram_id=referrer_telegram_id,
     )
 
+    # ---- проверка подписки (как у тебя было) ----
     is_member = False
     try:
         member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", message.from_user.id)
@@ -272,14 +351,13 @@ async def command_start(message: Message, state: FSMContext):
         )
         return
 
-    # Если пришёл с сайта с выбранным стилем — показываем выбор аватара/фото
+    # если пришёл по диплинку стиля — как было
     if style_id_for_generation is not None:
         await _enter_photoshoot_waiting_photo(message, state, style_id_for_generation)
         return
 
-    # Обычный старт: ТОЛЬКО стартовый текст + стартовая клавиатура
+    # обычный старт
     await state.set_state(MainStates.start)
-
     await message.answer(
         """📸 Добро пожаловать в Ai Photo-Studio!
 
@@ -289,25 +367,56 @@ async def command_start(message: Message, state: FSMContext):
         reply_markup=get_start_keyboard(),
     )
 
-    # Лог в админский чат, если рефералка
-    if referrer_telegram_id is not None:
+    # ---- рефералка: только закрепляем и уведомляем, без "пополнений" новому ----
+    # срабатывает ТОЛЬКО если:
+    #  - был передан referrer_telegram_id
+    #  - у пользователя раньше НЕ было referrer_id
+    #  - и реферер реально записался (первый раз)
+    if referrer_telegram_id is not None and existing_referrer_id is None:
+        # убедимся, что реферер есть в БД
         referrer_user = await get_user_by_telegram_id(referrer_telegram_id)
-        referred_count = await get_referrals_count(referrer_telegram_id)
 
-        new_user_id = user.telegram_id
-        new_username = message.from_user.username or "—"
-        ref_username = referrer_user.username or "—"
+        # делаем реферера "реферальным партнёром" (is_referral=True) — только реферер!
+        await ensure_user_is_referral(referrer_telegram_id)
 
-        await send_admin_log(
-            bot,
-            (
-                "👥 <b>Новый переход по реферальной ссылке</b>\n"
-                f"Новый пользователь: <code>{new_user_id}</code> @{new_username}\n"
-                f"Пригласитель: <code>{referrer_telegram_id}</code> @{ref_username}\n"
-                f"Всего рефералов у пригласителя: <b>{referred_count}</b>"
-            ),
+        # начисляем 10% от 49₽ в referral_earned_rub (если ты это оставляешь)
+        # НОВОМУ пользователю ничего не начисляем.
+        reward = await grant_referral_click_bonus_if_needed(
+            new_user_telegram_id=message.from_user.id,
+            referrer_telegram_id=referrer_telegram_id,
+            existing_referrer_id=existing_referrer_id,
         )
 
+        # уведомление рефереру в личку
+        new_username = message.from_user.username or "—"
+        try:
+            text = (
+                "🎉 У тебя новый реферал!\n\n"
+                f"Пользователь: <code>{message.from_user.id}</code> @{new_username}\n"
+            )
+            if reward > 0:
+                text += f"\nНачислено за переход: <b>{reward} ₽</b>"
+            await bot.send_message(referrer_telegram_id, text, parse_mode="HTML")
+        except Exception:
+            # если реферер запретил писать — не падаем
+            pass
+
+        # лог в админ-чат (по желанию, как было)
+        try:
+            referred_count = await get_referrals_count(referrer_telegram_id)
+            ref_username = referrer_user.username or "—"
+            await send_admin_log(
+                bot,
+                (
+                    "👥 <b>Новый переход по реферальной ссылке</b>\n"
+                    f"Новый пользователь: <code>{message.from_user.id}</code> @{new_username}\n"
+                    f"Пригласитель: <code>{referrer_telegram_id}</code> @{ref_username}\n"
+                    f"Всего рефералов у пригласителя: <b>{referred_count}</b>\n"
+                    + (f"Начислено за переход: <b>{reward} ₽</b>" if reward > 0 else "")
+                ),
+            )
+        except Exception:
+            pass
 
 @router.message(Command("ref"))
 async def referral_link_command(message: Message):

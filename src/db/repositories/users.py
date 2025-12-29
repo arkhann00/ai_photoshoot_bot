@@ -13,6 +13,82 @@ from src.db.models import User
 from src.constants import PHOTOSHOOT_PRICE
 
 
+from sqlalchemy import exists, select, update
+from sqlalchemy.orm import aliased
+
+# 10% от одной генерации (PHOTOSHOOT_PRICE = 49) => 4.9 => округляем до 5 ₽
+REFERRAL_CLICK_PERCENT = 0.10
+
+
+def _referral_click_reward_rub() -> int:
+    try:
+        price = int(PHOTOSHOOT_PRICE)
+    except Exception:
+        price = 49
+    # round(4.9) = 5
+    return max(1, int(round(price * REFERRAL_CLICK_PERCENT)))
+
+
+async def sync_is_referral_flags() -> int:
+    """
+    При запуске бота: выставляет is_referral=True всем, у кого есть хотя бы 1 реферал.
+    Возвращает кол-во обновлённых строк (примерно, зависит от БД).
+    """
+    Ref = aliased(User)
+
+    async with async_session() as session:
+        stmt = (
+            update(User)
+            .where(
+                User.is_referral == False,  # noqa: E712
+                exists(select(1).select_from(Ref).where(Ref.referrer_id == User.telegram_id)),
+            )
+            .values(is_referral=True)
+        )
+        res = await session.execute(stmt)
+        await session.commit()
+        return int(getattr(res, "rowcount", 0) or 0)
+
+
+async def ensure_user_is_referral(telegram_id: int) -> None:
+    """
+    Гарантирует is_referral=True (не падает, если юзера нет — тогда просто ничего).
+    """
+    async with async_session() as session:
+        await session.execute(
+            update(User)
+            .where(User.telegram_id == telegram_id)
+            .values(is_referral=True)
+        )
+        await session.commit()
+
+
+async def grant_referral_click_bonus_if_needed(
+    *,
+    new_user_telegram_id: int,
+    referrer_telegram_id: int,
+    existing_referrer_id: Optional[int],
+) -> int:
+    """
+    Начисляет бонус за переход по рефералке ТОЛЬКО если:
+    - у нового пользователя раньше не было referrer_id (existing_referrer_id is None)
+    - и referrer_id сейчас реально привязан к referrer_telegram_id
+
+    Возвращает начисленную сумму (0 если ничего не начислили).
+    """
+    if referrer_telegram_id <= 0:
+        return 0
+    if existing_referrer_id is not None:
+        return 0
+    if new_user_telegram_id == referrer_telegram_id:
+        return 0
+
+    reward = _referral_click_reward_rub()
+    await add_referral_earnings(referrer_telegram_id, reward)
+    await ensure_user_is_referral(referrer_telegram_id)
+    return reward
+
+
 async def get_or_create_user(
     telegram_id: int,
     username: Optional[str] = None,

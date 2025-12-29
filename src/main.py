@@ -21,6 +21,7 @@ from aiogram.types import Message
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
 from src.db.repositories.users import is_user_admin_db, iter_all_user_ids
+from src.db.repositories.users import sync_is_referral_flags
 
 
 logging.basicConfig(
@@ -81,6 +82,8 @@ async def admin_broadcast(message: Message):
         f"Отправлено: {ok}\n"
         f"Ошибок: {fail}"
     )
+    
+
 
 
 async def main() -> None:
@@ -104,6 +107,9 @@ async def main() -> None:
     dp.shutdown.register(on_shutdown)
 
     # Инициализация БД (создание таблиц и т.п.)
+    
+    updated = await sync_is_referral_flags()
+    
     await init_db()
 
     # Запуск поллинга
