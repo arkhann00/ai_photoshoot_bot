@@ -23,6 +23,7 @@ from src.db import (
     get_user_balance as db_get_user_balance,
     get_user_by_telegram_id,
 )
+from src.keyboards import get_start_keyboard
 
 router = Router()
 
@@ -577,7 +578,7 @@ async def successful_payment_handler(message: Message) -> None:
             f"Вы оплатили: {paid_amount_rub} ₽.\n"
             f"Текущий баланс: {int(new_balance / 49)} фото"
         )
-        await message.answer(text, reply_markup=get_after_success_keyboard())
+        await message.answer(text, reply_markup=get_start_keyboard())
 
         await send_admin_log(
             bot,
