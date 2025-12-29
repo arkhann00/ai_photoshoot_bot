@@ -42,6 +42,7 @@ PHOTO_PACK_PRICES_RUB: Dict[int, int] = {
     3: 119,
     5: 149,
     10: 199,
+    50: 749,   # ✅ NEW
 }
 
 # Пакеты пополнения: callback_data -> сумма_руб (СУММА ОПЛАТЫ)
@@ -50,6 +51,7 @@ TOPUP_OPTIONS: Dict[str, int] = {
     "topup_119": 119,
     "topup_149": 149,
     "topup_199": 199,
+    "topup_749": 749,  # ✅ NEW
 }
 
 # Сколько фотосессий выдаём за пакет
@@ -58,15 +60,16 @@ TOPUP_PACK_PHOTOS: Dict[str, int] = {
     "topup_119": 3,
     "topup_149": 5,
     "topup_199": 10,
+    "topup_749": 50,   # ✅ NEW
 }
 
 # ✅ Сколько рублей зачисляем на баланс за пакет
-# ВАЖНО: для 2 фотосессий начисляем 99 ₽ (а не 98)
 TOPUP_PACK_CREDIT_RUB: Dict[str, int] = {
     "topup_99": 99,  # 2 фотосессии, но зачисляем 99 ₽
     "topup_119": 3 * int(PHOTOSHOOT_PRICE),
     "topup_149": 5 * int(PHOTOSHOOT_PRICE),
     "topup_199": 10 * int(PHOTOSHOOT_PRICE),
+    "topup_749": 50 * int(PHOTOSHOOT_PRICE),  # ✅ NEW (50 генераций)
 }
 
 TAX_SYSTEM_CODE = 1
@@ -160,6 +163,7 @@ def get_balance_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Пополнить: 3 фото — 119 ₽", callback_data="topup_119")],
             [InlineKeyboardButton(text="Пополнить: 5 фото — 149 ₽", callback_data="topup_149")],
             [InlineKeyboardButton(text="Пополнить: 10 фото — 199 ₽", callback_data="topup_199")],
+            [InlineKeyboardButton(text="Пополнить: 50 фото — 749 ₽", callback_data="topup_749")],  # ✅ NEW
             [InlineKeyboardButton(text="Промокод", callback_data="promo_code")],
             [InlineKeyboardButton(text="Главное меню", callback_data="back_to_main_menu")],
         ]
