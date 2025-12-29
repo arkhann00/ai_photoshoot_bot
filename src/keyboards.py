@@ -67,7 +67,7 @@ def get_start_keyboard() -> InlineKeyboardMarkup:
             [balance_button],
             [support_button],
             [referral_button],
-            [cabinet_button]
+            [cabinet_button],
             [chanal_link]
         ],
     )
