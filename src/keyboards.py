@@ -10,6 +10,9 @@ from aiogram.types import (
 from src.config import settings
 from src.db import StyleCategory
 
+CHANNEL_USERNAME = "photo_ai_studio"
+CHANNEL_URL = f"https://t.me/{CHANNEL_USERNAME}"
+
 
 def _get_webapp_url() -> str:
     # берём из settings, если есть, иначе дефолт
@@ -32,32 +35,40 @@ def get_start_keyboard() -> InlineKeyboardMarkup:
         web_app=WebAppInfo(url=web_url),  # ВАЖНО: обычный переход на сайт, НЕ WebAppInfo
     )
     balance_button = InlineKeyboardButton(
-        text="Баланс",
+        text="Баланс 💵",
         callback_data="balance",
     )
     support_button = InlineKeyboardButton(
-        text="Поддержка",
+        text="Поддержка 🤝",
         callback_data="support",
     )
     referral_button = InlineKeyboardButton(
-        text="Реферальная ссылка",
+        text="Пригласи друга - заработай 💸",
         callback_data="referral_link",
     )
     cabinet_button = InlineKeyboardButton(
-        text="👤 Личный кабинет",
+        text="Личный кабинет 👤",
         callback_data="personal_cabinet",
     )
 
     promo_button = InlineKeyboardButton(
-        text="Промокод",
+        text="Промокод 🔤",
         callback_data="promo_code",
+    )
+    
+    chanal_link = InlineKeyboardButton (
+        text="Наш канал 🔥",
+        url=CHANNEL_URL,
     )
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [make_photoshoot_button],
-            [balance_button, support_button],
-            [referral_button, cabinet_button],
+            [balance_button],
+            [support_button],
+            [referral_button],
+            [cabinet_button]
+            [chanal_link]
         ],
     )
 
