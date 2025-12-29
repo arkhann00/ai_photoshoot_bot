@@ -232,3 +232,72 @@ async def set_style_is_new(style_id: int, is_new: bool) -> Optional[StylePrompt]
         await session.commit()
         await session.refresh(obj)
         return obj
+    
+from sqlalchemy import desc
+
+# -------------------------------------------------------------------
+# TOP USED (by gender)
+# -------------------------------------------------------------------
+
+async def get_top_used_styles_male(limit: int = 10) -> list[StylePrompt]:
+    async with async_session() as session:
+        stmt = (
+            select(StylePrompt)
+            .where(
+                StylePrompt.is_active == True,  # noqa: E712
+                StylePrompt.gender == StyleGender.male,
+            )
+            .order_by(desc(StylePrompt.usage_count), StylePrompt.id.asc())
+            .limit(int(limit))
+        )
+        res = await session.execute(stmt)
+        return list(res.scalars().all())
+
+
+async def get_top_used_styles_female(limit: int = 10) -> list[StylePrompt]:
+    async with async_session() as session:
+        stmt = (
+            select(StylePrompt)
+            .where(
+                StylePrompt.is_active == True,  # noqa: E712
+                StylePrompt.gender == StyleGender.female,
+            )
+            .order_by(desc(StylePrompt.usage_count), StylePrompt.id.asc())
+            .limit(int(limit))
+        )
+        res = await session.execute(stmt)
+        return list(res.scalars().all())
+
+
+# -------------------------------------------------------------------
+# NEW styles (by gender)
+# -------------------------------------------------------------------
+
+async def get_new_styles_male() -> list[StylePrompt]:
+    async with async_session() as session:
+        stmt = (
+            select(StylePrompt)
+            .where(
+                StylePrompt.is_active == True,  # noqa: E712
+                StylePrompt.gender == StyleGender.male,
+                StylePrompt.is_new == True,  # noqa: E712
+            )
+            .order_by(StylePrompt.id.asc())
+        )
+        res = await session.execute(stmt)
+        return list(res.scalars().all())
+
+
+async def get_new_styles_female() -> list[StylePrompt]:
+    async with async_session() as session:
+        stmt = (
+            select(StylePrompt)
+            .where(
+                StylePrompt.is_active == True,  # noqa: E712
+                StylePrompt.gender == StyleGender.female,
+                StylePrompt.is_new == True,  # noqa: E712
+            )
+            .order_by(StylePrompt.id.asc())
+        )
+        res = await session.execute(stmt)
+        return list(res.scalars().all())

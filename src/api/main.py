@@ -73,6 +73,12 @@ from src.db import (
     User,
     clear_users_statistics,
 )
+from src.db.repositories.styles import (
+    get_top_used_styles_male,
+    get_top_used_styles_female,
+    get_new_styles_male,
+    get_new_styles_female,
+)
 
 # -------------------------------------------------------------------
 # Общая настройка приложения
@@ -1439,3 +1445,96 @@ async def admin_get_promo_by_code(
         created_at=created_at_str,
         updated_at=updated_at_str,
     )
+    
+# -------------------------------------------------------------------
+# Популярные и NEW стили — публичное API
+# -------------------------------------------------------------------
+
+@app.get("/api/styles/top-used/male", response_model=List[StyleResponse])
+async def api_top_used_styles_male(
+    request: Request,
+    limit: int = Query(10, ge=1, le=100),
+) -> List[StyleResponse]:
+    styles = await get_top_used_styles_male(limit=limit)
+    return [
+        StyleResponse(
+            id=s.id,
+            title=s.title,
+            description=s.description,
+            prompt=s.prompt,
+            image_filename=s.image_filename,
+            image_url=_img_url(request, s.image_filename),
+            is_active=s.is_active,
+            category_id=s.category_id,
+            gender=s.gender.value,
+            is_new=bool(getattr(s, "is_new", False)),
+            usage_count=int(getattr(s, "usage_count", 0) or 0),
+        )
+        for s in styles
+    ]
+
+
+@app.get("/api/styles/top-used/female", response_model=List[StyleResponse])
+async def api_top_used_styles_female(
+    request: Request,
+    limit: int = Query(10, ge=1, le=100),
+) -> List[StyleResponse]:
+    styles = await get_top_used_styles_female(limit=limit)
+    return [
+        StyleResponse(
+            id=s.id,
+            title=s.title,
+            description=s.description,
+            prompt=s.prompt,
+            image_filename=s.image_filename,
+            image_url=_img_url(request, s.image_filename),
+            is_active=s.is_active,
+            category_id=s.category_id,
+            gender=s.gender.value,
+            is_new=bool(getattr(s, "is_new", False)),
+            usage_count=int(getattr(s, "usage_count", 0) or 0),
+        )
+        for s in styles
+    ]
+
+
+@app.get("/api/styles/new/male", response_model=List[StyleResponse])
+async def api_new_styles_male(request: Request) -> List[StyleResponse]:
+    styles = await get_new_styles_male()
+    return [
+        StyleResponse(
+            id=s.id,
+            title=s.title,
+            description=s.description,
+            prompt=s.prompt,
+            image_filename=s.image_filename,
+            image_url=_img_url(request, s.image_filename),
+            is_active=s.is_active,
+            category_id=s.category_id,
+            gender=s.gender.value,
+            is_new=bool(getattr(s, "is_new", False)),
+            usage_count=int(getattr(s, "usage_count", 0) or 0),
+        )
+        for s in styles
+    ]
+
+
+@app.get("/api/styles/new/female", response_model=List[StyleResponse])
+async def api_new_styles_female(request: Request) -> List[StyleResponse]:
+    styles = await get_new_styles_female()
+    return [
+        StyleResponse(
+            id=s.id,
+            title=s.title,
+            description=s.description,
+            prompt=s.prompt,
+            image_filename=s.image_filename,
+            image_url=_img_url(request, s.image_filename),
+            is_active=s.is_active,
+            category_id=s.category_id,
+            gender=s.gender.value,
+            is_new=bool(getattr(s, "is_new", False)),
+            usage_count=int(getattr(s, "usage_count", 0) or 0),
+        )
+        for s in styles
+    ]
