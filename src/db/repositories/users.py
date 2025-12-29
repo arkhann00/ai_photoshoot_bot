@@ -319,3 +319,24 @@ async def get_all_users() -> list[User]:
             async with async_session() as session:
                 result = await session.execute(select(User))
                 return list(result.scalars().all())
+            
+from sqlalchemy import select
+from src.db.models import User
+from src.db.session import async_session
+
+async def iter_all_user_ids(batch_size: int = 1000):
+    """
+    Асинхронный генератор telegram_id всех пользователей батчами.
+    """
+    offset = 0
+    while True:
+        async with async_session() as session:
+            res = await session.execute(
+                select(User.telegram_id).order_by(User.id.asc()).offset(offset).limit(batch_size)
+            )
+            ids = [int(x) for x in res.scalars().all()]
+        if not ids:
+            break
+        for uid in ids:
+            yield uid
+        offset += batch_size
