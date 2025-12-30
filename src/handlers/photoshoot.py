@@ -768,6 +768,7 @@ async def _run_generation(
     *,
     bot: Bot,
     chat_id: int,
+    message_thread_id: Optional[int],  # ✅ добавили топик
     user_id: int,
     username: str,
     state: FSMContext,
@@ -779,17 +780,43 @@ async def _run_generation(
     update_avatar_after_success: bool,
     new_avatar_file_id: Optional[str],
 ) -> None:
+    """
+    Генерация + логирование + отправка результата.
+    ВАЖНО: в форумных супергруппах обязателен message_thread_id, иначе Telegram кидает
+    'invalid topic identifier specified'.
+    """
+
     await state.set_state(MainStates.making_photoshoot_success)
 
+    # Нормализуем thread_id: Telegram может прислать 0/None
+    thread_id = message_thread_id if message_thread_id not in (None, 0) else None
+
+    def _send_kwargs() -> dict:
+        kw = {"chat_id": chat_id}
+        if thread_id is not None:
+            kw["message_thread_id"] = thread_id
+        return kw
+
     await bot.send_message(
-        chat_id=chat_id,
+        **_send_kwargs(),
         text=(
             f"Готовлю твою фотосессию в стиле «{style_title}»… ⏳\n"
             "Обычно это занимает 1-2 минуты."
         ),
     )
 
-    await bot.send_chat_action(chat_id=chat_id, action="upload_photo")
+    # Chat action НЕ должен ронять бота
+    try:
+        await bot.send_chat_action(
+            chat_id=chat_id,
+            action="upload_photo",
+            message_thread_id=thread_id,
+        )
+    except TelegramBadRequest as e:
+        # индикатор не критичен
+        logger.warning("send_chat_action failed (ignored): %s", e)
+
+    generated_photo = None
 
     try:
         generated_photo = await generate_photoshoot_image(
@@ -808,8 +835,8 @@ async def _run_generation(
             provider="comet_gemini_2_5_flash",
             input_photos_count=1,
         )
-        
-                # ✅ Увеличиваем счётчик использований стиля (ТОЛЬКО после успешной генерации)
+
+        # ✅ Инкремент usage_count только после успеха
         try:
             st = await state.get_data()
             style_id = st.get("current_style_id")
@@ -823,11 +850,12 @@ async def _run_generation(
             if style_id is not None:
                 await increment_style_usage(int(style_id))
             else:
-                logger.warning("Не смог определить style_id для инкремента usage_count (style_title=%s)", style_title)
-
+                logger.warning(
+                    "Не смог определить style_id для usage_count (style_title=%s)",
+                    style_title,
+                )
         except Exception as inc_err:
-            # не ломаем генерацию из-за статистики
-            logger.warning("Не удалось увеличить usage_count для стиля %s: %s", style_title, inc_err)
+            logger.warning("Не удалось увеличить usage_count для %s: %s", style_title, inc_err)
 
         await send_admin_log(
             bot,
@@ -840,14 +868,13 @@ async def _run_generation(
             ),
         )
 
-        # после УСПЕШНОЙ генерации — обновляем аватар (если нужно)
+        # ✅ после успеха — обновляем аватар (если нужно)
         if update_avatar_after_success and new_avatar_file_id:
             await set_user_avatar(
                 telegram_id=user_id,
                 file_id=new_avatar_file_id,
                 source_style_title=f"avatar_after_success:{style_title}",
             )
-
 
     except Exception as e:
         await log_photoshoot(
@@ -874,8 +901,9 @@ async def _run_generation(
 
         await state.update_data(is_generating=False)
         await state.set_state(MainStates.making_photoshoot_failed)
+
         await bot.send_message(
-            chat_id=chat_id,
+            **_send_kwargs(),
             text=(
                 "Упс… Что-то пошло не так при генерации фото 😔\n"
                 "Сервис обработки временно недоступен.\n"
@@ -885,16 +913,25 @@ async def _run_generation(
         )
         return
 
-        # --- отправка результата (документ = оригинал, фото = возможно сжатое) ---
+    # ---------- отправка результата (ВАЖНО: этот блок должен быть ПОСЛЕ try/except) ----------
+    if generated_photo is None:
+        # защитный случай (не должен происходить)
+        await state.update_data(is_generating=False)
+        await bot.send_message(
+            **_send_kwargs(),
+            text="Не удалось получить результат генерации. Попробуй ещё раз позже 🙏",
+            reply_markup=get_error_generating_keyboard(),
+        )
+        return
+
     orig_bytes, orig_name = _input_file_to_bytes(generated_photo)
 
-    # 1) Документ — всегда оригинал
+    # 1) Документ — оригинал
     doc_file = BufferedInputFile(orig_bytes, filename=orig_name or "result.png")
 
-    # 2) Фото — если оригинал > 10MiB, ужимаем (файл при этом НЕ трогаем)
-    photo_file: BufferedInputFile | None
+    # 2) Фото — если > 10MiB, сжимаем в JPEG
+    photo_file: Optional[BufferedInputFile]
     if len(orig_bytes) <= TG_PHOTO_MAX_BYTES:
-        # можно отправить как фото без изменений (но на всякий случай даём адекватное имя)
         photo_file = BufferedInputFile(orig_bytes, filename="preview.jpg")
     else:
         compressed = _compress_to_jpeg_under_limit(orig_bytes)
@@ -904,14 +941,16 @@ async def _run_generation(
 
     if photo_file is not None:
         try:
-            photo_msg = await bot.send_photo(chat_id=chat_id, photo=photo_file)
+            photo_msg = await bot.send_photo(
+                **_send_kwargs(),
+                photo=photo_file,
+            )
             photo_file_id = photo_msg.photo[-1].file_id
         except TelegramBadRequest as e:
-            # если вдруг Telegram всё равно не принял как фото — не падаем, просто без превью
             logger.warning("Не удалось отправить превью-фото (будет только файл): %s", e)
 
     doc_msg = await bot.send_document(
-        chat_id=chat_id,
+        **_send_kwargs(),
         document=doc_file,
         caption="Готово! Вот твоё фото ✨",
     )
@@ -924,7 +963,7 @@ async def _run_generation(
     )
 
     await bot.send_message(
-        chat_id=chat_id,
+        **_send_kwargs(),
         text="Что дальше?",
         reply_markup=get_after_photoshoot_keyboard(),
     )
@@ -1015,6 +1054,7 @@ async def use_avatar(callback: CallbackQuery, state: FSMContext):
     await _run_generation(
         bot=callback.bot,
         chat_id=callback.message.chat.id,
+        message_thread_id=getattr(callback.message, "message_thread_id", None),  # ✅
         user_id=callback.from_user.id,
         username=username,
         state=state,
@@ -1026,6 +1066,7 @@ async def use_avatar(callback: CallbackQuery, state: FSMContext):
         update_avatar_after_success=False,
         new_avatar_file_id=None,
     )
+
 
 
 @router.message(MainStates.making_photoshoot_process, F.photo)
@@ -1069,6 +1110,7 @@ async def handle_selfie(message: Message, state: FSMContext):
                 reply_markup=get_insufficient_balance_keyboard(),
             )
             return
+
     avatar_update_mode = data.get("avatar_update_mode")
     current_avatar = await get_user_avatar(message.from_user.id)
 
@@ -1094,6 +1136,7 @@ async def handle_selfie(message: Message, state: FSMContext):
     await _run_generation(
         bot=message.bot,
         chat_id=message.chat.id,
+        message_thread_id=getattr(message, "message_thread_id", None),  # ✅
         user_id=message.from_user.id,
         username=username,
         state=state,
@@ -1105,7 +1148,6 @@ async def handle_selfie(message: Message, state: FSMContext):
         update_avatar_after_success=update_avatar_after_success,
         new_avatar_file_id=new_avatar_file_id,
     )
-
 
 @router.callback_query(F.data == "quick_topup_49")
 async def quick_topup_49_handler(callback: CallbackQuery) -> None:
