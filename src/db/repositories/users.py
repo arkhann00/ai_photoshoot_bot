@@ -235,23 +235,46 @@ async def get_user_balance(telegram_id: int) -> int:
     return user.balance
 
 
-async def consume_photoshoot_credit_or_balance(telegram_id: int, price_rub: int) -> bool:
+async def consume_photoshoot_credit_or_balance(
+    telegram_id: int,
+    price_rub: int,
+    *,
+    check_only: bool = False,
+) -> bool:
+    """
+    check_only=True  -> только проверка (НЕ списывает)
+    check_only=False -> реальное списание (кредит или баланс)
+    """
     async with async_session() as session:
         result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
 
+        # Если юзера нет:
+        # - в check_only не создаём запись (просто считаем, что денег нет)
+        # - при списании создаём с нуля (как раньше)
         if user is None:
+            if check_only:
+                return False
             user = User(telegram_id=telegram_id, balance=0, photoshoot_credits=0)
             session.add(user)
             await session.flush()
 
-        if user.photoshoot_credits > 0:
+        # ---------- ТОЛЬКО ПРОВЕРКА ----------
+        if check_only:
+            if (user.photoshoot_credits or 0) > 0:
+                return True
+            if (user.balance or 0) >= int(price_rub):
+                return True
+            return False
+
+        # ---------- РЕАЛЬНОЕ СПИСАНИЕ ----------
+        if (user.photoshoot_credits or 0) > 0:
             user.photoshoot_credits -= 1
             await session.commit()
             return True
 
-        if user.balance >= price_rub:
-            user.balance -= price_rub
+        if (user.balance or 0) >= int(price_rub):
+            user.balance -= int(price_rub)
             await session.commit()
             return True
 

@@ -768,7 +768,7 @@ async def _run_generation(
     *,
     bot: Bot,
     chat_id: int,
-    message_thread_id: Optional[int],  # ✅ добавили топик
+    message_thread_id: Optional[int],
     user_id: int,
     username: str,
     state: FSMContext,
@@ -780,15 +780,8 @@ async def _run_generation(
     update_avatar_after_success: bool,
     new_avatar_file_id: Optional[str],
 ) -> None:
-    """
-    Генерация + логирование + отправка результата.
-    ВАЖНО: в форумных супергруппах обязателен message_thread_id, иначе Telegram кидает
-    'invalid topic identifier specified'.
-    """
-
     await state.set_state(MainStates.making_photoshoot_success)
 
-    # Нормализуем thread_id: Telegram может прислать 0/None
     thread_id = message_thread_id if message_thread_id not in (None, 0) else None
 
     def _send_kwargs() -> dict:
@@ -805,7 +798,6 @@ async def _run_generation(
         ),
     )
 
-    # Chat action НЕ должен ронять бота
     try:
         await bot.send_chat_action(
             chat_id=chat_id,
@@ -813,12 +805,12 @@ async def _run_generation(
             message_thread_id=thread_id,
         )
     except TelegramBadRequest as e:
-        # индикатор не критичен
         logger.warning("send_chat_action failed (ignored): %s", e)
 
     generated_photo = None
 
     try:
+        # 1) Генерация
         generated_photo = await generate_photoshoot_image(
             style_title=style_title,
             style_prompt=style_prompt,
@@ -826,6 +818,37 @@ async def _run_generation(
             bot=bot,
         )
 
+        # 2) ✅ Списание ТОЛЬКО после успешной генерации (и только не-админам)
+        if (not user_is_admin) and int(log_cost_rub) > 0:
+            charged = await consume_photoshoot_credit_or_balance(
+                telegram_id=user_id,
+                price_rub=int(log_cost_rub),
+                check_only=False,
+            )
+            if not charged:
+                # Редкий кейс (гонка/баланс изменился). Результат не выдаём бесплатно.
+                await send_admin_log(
+                    bot,
+                    (
+                        "🟠 <b>Генерация прошла, но списание не удалось</b>\n"
+                        f"Пользователь: <code>{user_id}</code> @{username}\n"
+                        f"Стиль: {style_title}\n"
+                        f"Сумма: {log_cost_rub} ₽"
+                    ),
+                )
+                await state.update_data(is_generating=False)
+                await state.set_state(MainStates.making_photoshoot_failed)
+                await bot.send_message(
+                    **_send_kwargs(),
+                    text=(
+                        "Не удалось списать оплату за генерацию (баланс изменился).\n"
+                        "Попробуй пополнить баланс и повторить."
+                    ),
+                    reply_markup=get_insufficient_balance_keyboard(),
+                )
+                return
+
+        # 3) Лог успеха
         await log_photoshoot(
             telegram_id=user_id,
             style_title=style_title,
@@ -836,7 +859,7 @@ async def _run_generation(
             input_photos_count=1,
         )
 
-        # ✅ Инкремент usage_count только после успеха
+        # 4) usage_count — только после успеха
         try:
             st = await state.get_data()
             style_id = st.get("current_style_id")
@@ -850,10 +873,7 @@ async def _run_generation(
             if style_id is not None:
                 await increment_style_usage(int(style_id))
             else:
-                logger.warning(
-                    "Не смог определить style_id для usage_count (style_title=%s)",
-                    style_title,
-                )
+                logger.warning("Не смог определить style_id для usage_count (style_title=%s)", style_title)
         except Exception as inc_err:
             logger.warning("Не удалось увеличить usage_count для %s: %s", style_title, inc_err)
 
@@ -868,7 +888,7 @@ async def _run_generation(
             ),
         )
 
-        # ✅ после успеха — обновляем аватар (если нужно)
+        # 5) аватар после успеха (если надо)
         if update_avatar_after_success and new_avatar_file_id:
             await set_user_avatar(
                 telegram_id=user_id,
@@ -877,6 +897,7 @@ async def _run_generation(
             )
 
     except Exception as e:
+        # ✅ ВАЖНО: здесь списания НЕ было и не будет
         await log_photoshoot(
             telegram_id=user_id,
             style_title=style_title,
@@ -905,31 +926,32 @@ async def _run_generation(
         await bot.send_message(
             **_send_kwargs(),
             text=(
-                "Упс… Что-то пошло не так при генерации фото 😔\n"
-                "Сервис обработки временно недоступен.\n"
-                "Попробуй, пожалуйста, ещё раз чуть позже."
+                "Произошла какая-то ошибка, сделать генерацию ещё раз\n"
+                "Мы сообщили о проблеме\n"
+                "Фотосессии с баланса не будут списаны"
             ),
             reply_markup=get_error_generating_keyboard(),
         )
         return
 
-    # ---------- отправка результата (ВАЖНО: этот блок должен быть ПОСЛЕ try/except) ----------
     if generated_photo is None:
-        # защитный случай (не должен происходить)
         await state.update_data(is_generating=False)
+        await state.set_state(MainStates.making_photoshoot_failed)
         await bot.send_message(
             **_send_kwargs(),
-            text="Не удалось получить результат генерации. Попробуй ещё раз позже 🙏",
+            text=(
+                "Произошла какая-то ошибка, сделать генерацию ещё раз\n"
+                "Мы сообщили о проблеме\n"
+                "Фотосессии с баланса не будут списаны"
+            ),
             reply_markup=get_error_generating_keyboard(),
         )
         return
 
+    # --- отправка результата ---
     orig_bytes, orig_name = _input_file_to_bytes(generated_photo)
-
-    # 1) Документ — оригинал
     doc_file = BufferedInputFile(orig_bytes, filename=orig_name or "result.png")
 
-    # 2) Фото — если > 10MiB, сжимаем в JPEG
     photo_file: Optional[BufferedInputFile]
     if len(orig_bytes) <= TG_PHOTO_MAX_BYTES:
         photo_file = BufferedInputFile(orig_bytes, filename="preview.jpg")
@@ -938,13 +960,9 @@ async def _run_generation(
         photo_file = BufferedInputFile(compressed, filename="preview.jpg") if compressed else None
 
     photo_file_id: Optional[str] = None
-
     if photo_file is not None:
         try:
-            photo_msg = await bot.send_photo(
-                **_send_kwargs(),
-                photo=photo_file,
-            )
+            photo_msg = await bot.send_photo(**_send_kwargs(), photo=photo_file)
             photo_file_id = photo_msg.photo[-1].file_id
         except TelegramBadRequest as e:
             logger.warning("Не удалось отправить превью-фото (будет только файл): %s", e)
@@ -1029,15 +1047,16 @@ async def use_avatar(callback: CallbackQuery, state: FSMContext):
 
     user_is_admin = await is_admin(callback.from_user.id)
 
+    # ✅ ДО генерации — только проверка (без списания)
     if not user_is_admin:
         can_pay = await consume_photoshoot_credit_or_balance(
             telegram_id=callback.from_user.id,
             price_rub=PHOTOSHOOT_PRICE,
+            check_only=True,
         )
         if not can_pay:
             await state.update_data(is_generating=False)
             await state.set_state(MainStates.making_photoshoot_failed)
-
             await callback.message.answer(
                 "Недостаточно средств на балансе 😔\n"
                 "Нажми кнопку ниже, чтобы пополнить баланс.",
@@ -1054,7 +1073,7 @@ async def use_avatar(callback: CallbackQuery, state: FSMContext):
     await _run_generation(
         bot=callback.bot,
         chat_id=callback.message.chat.id,
-        message_thread_id=getattr(callback.message, "message_thread_id", None),  # ✅
+        message_thread_id=getattr(callback.message, "message_thread_id", None),
         user_id=callback.from_user.id,
         username=username,
         state=state,
@@ -1066,7 +1085,6 @@ async def use_avatar(callback: CallbackQuery, state: FSMContext):
         update_avatar_after_success=False,
         new_avatar_file_id=None,
     )
-
 
 
 @router.message(MainStates.making_photoshoot_process, F.photo)
@@ -1095,15 +1113,16 @@ async def handle_selfie(message: Message, state: FSMContext):
 
     user_is_admin = await is_admin(message.from_user.id)
 
+    # ✅ ДО генерации — только проверка (без списания)
     if not user_is_admin:
         can_pay = await consume_photoshoot_credit_or_balance(
             telegram_id=message.from_user.id,
             price_rub=PHOTOSHOOT_PRICE,
+            check_only=True,
         )
         if not can_pay:
             await state.update_data(is_generating=False)
             await state.set_state(MainStates.making_photoshoot_failed)
-
             await message.answer(
                 "Недостаточно средств на балансе 😔\n"
                 "Нажми кнопку ниже, чтобы пополнить баланс.",
@@ -1125,7 +1144,6 @@ async def handle_selfie(message: Message, state: FSMContext):
             source_style_title=f"avatar_first_upload:{style_title}",
         )
     else:
-        # аватар есть -> меняем только если пользователь выбрал "загрузить новое фото"
         if avatar_update_mode == "replace_after_success":
             update_avatar_after_success = True
             new_avatar_file_id = user_photo_file_id
@@ -1136,7 +1154,7 @@ async def handle_selfie(message: Message, state: FSMContext):
     await _run_generation(
         bot=message.bot,
         chat_id=message.chat.id,
-        message_thread_id=getattr(message, "message_thread_id", None),  # ✅
+        message_thread_id=getattr(message, "message_thread_id", None),
         user_id=message.from_user.id,
         username=username,
         state=state,
