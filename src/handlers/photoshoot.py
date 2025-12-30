@@ -817,6 +817,26 @@ async def _run_generation(
             user_photo_file_ids=input_photo_file_id,
             bot=bot,
         )
+        
+                # ✅ ЛОГ СТАРТА — только когда реально начинаем генерацию через ИИ
+        try:
+            st = await state.get_data()
+            entry_source = st.get("entry_source") or st.get("source") or "bot"
+            style_id = st.get("current_style_id")
+            await send_admin_log(
+                bot,
+                (
+                    "🟡 <b>Старт генерации фотосессии</b>\n"
+                    f"Пользователь: <code>{user_id}</code> @{username}\n"
+                    f"Стиль: {style_title}"
+                    + (f"\nStyle ID: <code>{style_id}</code>" if style_id is not None else "")
+                    + f"\nИсточник: <b>{entry_source}</b>\n"
+                    f"Админ: {'да' if user_is_admin else 'нет'}\n"
+                    f"К списанию (после успеха): <b>{log_cost_rub} ₽</b>"
+                ),
+            )
+        except Exception:
+            pass
 
         # 2) ✅ Списание ТОЛЬКО после успешной генерации (и только не-админам)
         if (not user_is_admin) and int(log_cost_rub) > 0:

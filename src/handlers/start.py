@@ -311,16 +311,7 @@ async def _enter_photoshoot_waiting_photo(
         )
 
     username = message.from_user.username or "—"
-    await send_admin_log(
-        message.bot,
-        (
-            "🌐 <b>Старт генерации с сайта</b>\n"
-            f"Пользователь: <code>{message.from_user.id}</code> @{username}\n"
-            f"Style ID: <code>{style.id}</code>\n"
-            f"Style title: <b>{style.title}</b>\n"
-            f"Аватар: {'есть' if avatar is not None else 'нет'}"
-        ),
-    )
+    
 
 from src.db.repositories.users import ensure_user_is_referral
 
