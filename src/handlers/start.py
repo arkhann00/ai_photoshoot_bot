@@ -125,6 +125,21 @@ async def send_admin_log(bot, text: str) -> None:
         )
     except Exception:
         return
+    
+def _format_referral_screen_text(*, link: str, referrals_count: int, earned_rub: int) -> str:
+    return (
+        "💰 <b>Зарабатывай с Ai Photo-Studio</b>\n\n"
+        "Хочешь получать деньги просто за то, что рассказываешь о нашем сервисе?\n\n"
+        "Теперь ты можешь стать нашим амбассадором 🤝\n\n"
+        "<b>Делись своей ссылкой</b> с друзьями или снимай рилсы, выкладывай посты и сторис с отметкой 🎥\n\n"
+        "Когда кто-то по твоей ссылке купит тариф — ты получишь <b>10%</b> от оплаты.\n\n"
+        "<b>Выплаты от 1000₽!</b>\n\n"
+        f"👥 Приглашено пользователей: <b>{int(referrals_count)}</b>\n"
+        f"💳 Заработано: <b>{int(earned_rub)} ₽</b>\n\n"
+        "🔗 <b>Ваша реферальная ссылка:</b>\n"
+        f"<code>{link}</code>\n\n"
+        "Отправляй её друзьям, в чаты, сторис или канал — и получай доход."
+    )
 
 
 async def get_referrals_count(referrer_telegram_id: int) -> int:
@@ -325,10 +340,10 @@ async def command_start(message: Message, state: FSMContext):
     if referrer_telegram_id == message.from_user.id:
         referrer_telegram_id = None
 
-    # важно: узнать, был ли реферер уже привязан ранее (чтобы не спамить и не начислять повторно)
+    # важно: понять, был ли уже закреплён реферер раньше
     existing_referrer_id = await _get_existing_referrer_id(message.from_user.id)
 
-    # создаём/обновляем пользователя + при первом переходе закрепляем referrer_id
+    # создаём/обновляем пользователя + закрепляем referrer_id только если он ещё пустой
     user = await get_or_create_user(
         telegram_id=message.from_user.id,
         username=message.from_user.username,
@@ -351,12 +366,12 @@ async def command_start(message: Message, state: FSMContext):
         )
         return
 
-    # если пришёл по диплинку стиля — как было
+    # Если пришёл с сайта с выбранным стилем — показываем выбор аватара/фото
     if style_id_for_generation is not None:
         await _enter_photoshoot_waiting_photo(message, state, style_id_for_generation)
         return
 
-    # обычный старт
+    # Обычный старт
     await state.set_state(MainStates.start)
     await message.answer(
         """📸 Добро пожаловать в Ai Photo-Studio!
@@ -367,56 +382,26 @@ async def command_start(message: Message, state: FSMContext):
         reply_markup=get_start_keyboard(),
     )
 
-    # ---- рефералка: только закрепляем и уведомляем, без "пополнений" новому ----
-    # срабатывает ТОЛЬКО если:
-    #  - был передан referrer_telegram_id
-    #  - у пользователя раньше НЕ было referrer_id
-    #  - и реферер реально записался (первый раз)
+    # ---- РЕФЕРАЛКА: только закрепление + уведомление, без начислений и без логов ----
+    # Срабатывает только если:
+    # - есть referrer_telegram_id
+    # - у пользователя раньше НЕ было referrer_id
     if referrer_telegram_id is not None and existing_referrer_id is None:
-        # убедимся, что реферер есть в БД
-        referrer_user = await get_user_by_telegram_id(referrer_telegram_id)
+        # (опционально) убедимся, что реферер существует в БД
+        await get_user_by_telegram_id(referrer_telegram_id)
 
-        # делаем реферера "реферальным партнёром" (is_referral=True) — только реферер!
+        # только пригласитель становится is_referral=True
         await ensure_user_is_referral(referrer_telegram_id)
 
-        # начисляем 10% от 49₽ в referral_earned_rub (если ты это оставляешь)
-        # НОВОМУ пользователю ничего не начисляем.
-        reward = await grant_referral_click_bonus_if_needed(
-            new_user_telegram_id=message.from_user.id,
-            referrer_telegram_id=referrer_telegram_id,
-            existing_referrer_id=existing_referrer_id,
-        )
-
-        # уведомление рефереру в личку
+        # уведомление пригласителю в личку
+        new_user_id = message.from_user.id
         new_username = message.from_user.username or "—"
-        try:
-            text = (
-                "🎉 У тебя новый реферал!\n\n"
-                f"Пользователь: <code>{message.from_user.id}</code> @{new_username}\n"
-            )
-            if reward > 0:
-                text += f"\nНачислено за переход: <b>{reward} ₽</b>"
-            await bot.send_message(referrer_telegram_id, text, parse_mode="HTML")
-        except Exception:
-            # если реферер запретил писать — не падаем
-            pass
-
-        # лог в админ-чат (по желанию, как было)
-        try:
-            referred_count = await get_referrals_count(referrer_telegram_id)
-            ref_username = referrer_user.username or "—"
-            await send_admin_log(
-                bot,
-                (
-                    "👥 <b>Новый переход по реферальной ссылке</b>\n"
-                    f"Новый пользователь: <code>{message.from_user.id}</code> @{new_username}\n"
-                    f"Пригласитель: <code>{referrer_telegram_id}</code> @{ref_username}\n"
-                    f"Всего рефералов у пригласителя: <b>{referred_count}</b>\n"
-                    + (f"Начислено за переход: <b>{reward} ₽</b>" if reward > 0 else "")
-                ),
-            )
-        except Exception:
-            pass
+        await _notify_referrer_new_referral(
+            bot,
+            referrer_id=int(referrer_telegram_id),
+            new_user_id=int(new_user_id),
+            new_username=new_username,
+        )
 
 @router.message(Command("ref"))
 async def referral_link_command(message: Message):
@@ -429,32 +414,22 @@ async def referral_link_command(message: Message):
 
     link = f"https://t.me/{bot_username}?start={message.from_user.id}"
 
+    referrals_count = await get_referrals_count(message.from_user.id)
     user = await get_user_by_telegram_id(message.from_user.id)
-    is_referral_partner = bool(getattr(user, "is_referral", False))
+    earned_rub = int(getattr(user, "referral_earned_rub", 0) or 0)
 
-    if not is_referral_partner:
-        await message.answer(
-            "Вот твоя реферальная ссылка:\n"
-            f"{link}\n\n"
-            "Отправь её друзьям — за каждую их успешную фотосессию "
-            "ты будешь получать <b>10 %</b> от его пополнения на свой баланс."
-        )
-        return
-
-    referrals_count = await get_referrals_count(user.telegram_id)
-    referral_balance = int(getattr(user, "referral_earned_rub", 0))
-
-    text = (
-        "Вот твоя реферальная ссылка:\n"
-        f"{link}\n\n"
-        "Отправь её друзьям — за каждую их успешную фотосессию "
-        "ты будешь получать <b>10 %</b> от его пополнения на свой баланс.\n\n"
-        f"Количество рефералов: <b>{referrals_count}</b>\n"
-        f"Ваш реферальный баланс: <b>{referral_balance} ₽</b>"
+    text = _format_referral_screen_text(
+        link=link,
+        referrals_count=referrals_count,
+        earned_rub=earned_rub,
     )
 
-    await message.answer(text, reply_markup=get_referral_partner_keyboard())
-
+    await message.answer(
+        text,
+        reply_markup=get_referral_partner_keyboard(),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 @router.callback_query(F.data == "referral_link")
 async def referral_link_button(callback: CallbackQuery):
@@ -469,34 +444,22 @@ async def referral_link_button(callback: CallbackQuery):
 
     link = f"https://t.me/{bot_username}?start={callback.from_user.id}"
 
+    referrals_count = await get_referrals_count(callback.from_user.id)
     user = await get_user_by_telegram_id(callback.from_user.id)
-    is_referral_partner = bool(getattr(user, "is_referral", False))
+    earned_rub = int(getattr(user, "referral_earned_rub", 0) or 0)
 
-    if not is_referral_partner:
-        await callback.message.edit_text(
-            "Вот твоя реферальная ссылка:\n"
-            f"{link}\n\n"
-            "Отправь её друзьям — за каждую их успешную фотосессию "
-            "ты будешь получать <b>10 %</b> от его пополнения на свой баланс.",
-            reply_markup=back_to_main_menu_keyboard(),
-        )
-        return
-
-    referrals_count = await get_referrals_count(user.telegram_id)
-    referral_balance = int(getattr(user, "referral_earned_rub", 0))
-
-    text = (
-        "Вот твоя реферальная ссылка:\n"
-        f"{link}\n\n"
-        "Отправь её друзьям — за каждую их успешную фотосессию "
-        "ты будешь получать <b>10 %</b> от его пополнения на свой баланс.\n\n"
-        f"Количество рефералов: <b>{referrals_count}</b>\n"
-        f"Ваш реферальный баланс: <b>{referral_balance} ₽</b>"
+    text = _format_referral_screen_text(
+        link=link,
+        referrals_count=referrals_count,
+        earned_rub=earned_rub,
     )
 
-    await callback.message.edit_text(text, reply_markup=get_referral_partner_keyboard())
-
-
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_referral_partner_keyboard(),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 @router.callback_query(F.data == "check_sub")
 async def check_subscription(callback: CallbackQuery):
