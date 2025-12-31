@@ -810,13 +810,6 @@ async def _run_generation(
     generated_photo = None
 
     try:
-        # 1) Генерация
-        generated_photo = await generate_photoshoot_image(
-            style_title=style_title,
-            style_prompt=style_prompt,
-            user_photo_file_ids=input_photo_file_id,
-            bot=bot,
-        )
         
                 # ✅ ЛОГ СТАРТА — только когда реально начинаем генерацию через ИИ
         try:
@@ -837,6 +830,16 @@ async def _run_generation(
             )
         except Exception:
             pass
+        
+        # 1) Генерация
+        generated_photo = await generate_photoshoot_image(
+            style_title=style_title,
+            style_prompt=style_prompt,
+            user_photo_file_ids=input_photo_file_id,
+            bot=bot,
+        )
+        
+        
 
         # 2) ✅ Списание ТОЛЬКО после успешной генерации (и только не-админам)
         if (not user_is_admin) and int(log_cost_rub) > 0:
