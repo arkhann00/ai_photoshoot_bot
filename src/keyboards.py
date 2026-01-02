@@ -60,6 +60,11 @@ def get_start_keyboard() -> InlineKeyboardMarkup:
         text="Наш канал 🔥",
         url=CHANNEL_URL,
     )
+    
+    usage_terms_button = InlineKeyboardButton (
+        text="Условия пользования 📄",
+        callback_data="usage_terms"
+    )
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -68,7 +73,8 @@ def get_start_keyboard() -> InlineKeyboardMarkup:
             [support_button],
             [referral_button],
             [cabinet_button],
-            [chanal_link]
+            [chanal_link],
+            [usage_terms_button]
         ],
     )
 

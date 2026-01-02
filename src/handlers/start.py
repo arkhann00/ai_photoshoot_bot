@@ -550,8 +550,40 @@ async def referral_withdraw_request(callback: CallbackQuery):
         "С тобой свяжутся, как только его обработают.",
         reply_markup=back_to_main_menu_keyboard(),
     )
+    
 
+@router.callback_query(F.data == "usage_terms")
+async def usage_terms(callback: CallbackQuery):
+    
+    user_agreement_button = InlineKeyboardButton (
+        text="Пользовательское соглашение",
+        url="https://docs.google.com/document/d/1CuXqGLTqOWnrSoMjSyQlNJdJUvgqa3ZnOa79wZ-hEYQ/edit?tab=t.0#heading=h.rwknewalurb"
+    )
+    
+    public_offer_button = InlineKeyboardButton (
+        text="Публичная оферта",
+        url="https://docs.google.com/document/d/1Ga3TLmxNl7pBMN_XN9-W264TKAff0701E_wo5wuYMBg/edit?usp=drivesdk"
+    )
+    
+    processing_policy_button = InlineKeyboardButton (
+        text="Политика обработки",
+        url="https://docs.google.com/document/d/1TylXB5os57I1wDI3CxL6YxaEaSiR4v1AIiiODvin7Rs/edit?usp=drivesdk"
+    )
+    
+    back_button = InlineKeyboardButton(
+        text="« Назад",
+        callback_data="back_to_main_menu",
+    )
+    
+    callback.answer()
+    callback.message.answer(text="Пользуясь данным сервисом, Вы соглашаетесь:", reply_markup=InlineKeyboardMarkup(
+        [[user_agreement_button]],
+        [[public_offer_button]],
+        [[processing_policy_button]],
+        [[back_button]]
+    ))
 
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.text == "/chat_id")
 async def show_group_id(message: Message):
     await message.answer(f"ID этого чата: {message.chat.id}")
+
