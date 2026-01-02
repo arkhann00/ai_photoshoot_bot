@@ -575,8 +575,8 @@ async def usage_terms(callback: CallbackQuery):
         callback_data="back_to_main_menu",
     )
     
-    callback.answer()
-    callback.message.answer(text="Пользуясь данным сервисом, Вы соглашаетесь:", reply_markup=InlineKeyboardMarkup(
+    await callback.answer()
+    await callback.message.edit_text(text="Пользуясь данным сервисом, Вы соглашаетесь:", reply_markup=InlineKeyboardMarkup(
         [[user_agreement_button]],
         [[public_offer_button]],
         [[processing_policy_button]],
