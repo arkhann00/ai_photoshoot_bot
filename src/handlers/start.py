@@ -576,11 +576,12 @@ async def usage_terms(callback: CallbackQuery):
     )
     
     await callback.answer()
-    await callback.message.edit_text(text="Пользуясь данным сервисом, Вы соглашаетесь:", reply_markup=InlineKeyboardMarkup(
-        [[user_agreement_button]],
-        [[public_offer_button]],
-        [[processing_policy_button]],
-        [[back_button]]
+    await callback.message.edit_text(text="Пользуясь данным сервисом, Вы соглашаетесь:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [user_agreement_button],
+        [public_offer_button],
+        [processing_policy_button],
+        [back_button]
+    ]
     ))
 
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.text == "/chat_id")
