@@ -81,12 +81,14 @@ from typing import Optional
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
+
 async def _notify_referrer_new_referral(
     bot: Bot,
     *,
     referrer_id: int,
     new_user_id: int,
     new_username: str,
+    referrals_count: int,
 ) -> None:
     try:
         u = (new_username or "—").strip()
@@ -97,7 +99,8 @@ async def _notify_referrer_new_referral(
 
         text = (
             "👥 У тебя новый реферал!\n\n"
-            f"Пользователь: <code>{new_user_id}</code> {u}"
+            f"Пользователь: <code>{new_user_id}</code> {u}\n"
+            f"Теперь рефералов: <b>{int(referrals_count)}</b> ✅"
         )
 
         await bot.send_message(
@@ -331,8 +334,14 @@ async def command_start(message: Message, state: FSMContext):
     if referrer_telegram_id == message.from_user.id:
         referrer_telegram_id = None
 
-    # важно: понять, был ли уже закреплён реферер раньше
+    # был ли уже закреплён реферер раньше
     existing_referrer_id = await _get_existing_referrer_id(message.from_user.id)
+
+    # ✅ если это первый заход по рефке — заранее узнаём старое кол-во
+    old_referrals_count: Optional[int] = None
+    should_notify_referrer = referrer_telegram_id is not None and existing_referrer_id is None
+    if should_notify_referrer:
+        old_referrals_count = await get_referrals_count(int(referrer_telegram_id))
 
     # создаём/обновляем пользователя + закрепляем referrer_id только если он ещё пустой
     user = await get_or_create_user(
@@ -340,6 +349,21 @@ async def command_start(message: Message, state: FSMContext):
         username=message.from_user.username,
         referrer_telegram_id=referrer_telegram_id,
     )
+
+    # ✅ Уведомление пригласителю — СРАЗУ после закрепления, даже если юзер ещё не подписан
+    if should_notify_referrer:
+        # (опционально) убедимся что реферер есть
+        await get_user_by_telegram_id(int(referrer_telegram_id))
+        await ensure_user_is_referral(int(referrer_telegram_id))
+
+        new_count = int(old_referrals_count or 0) + 1
+        await _notify_referrer_new_referral(
+            bot,
+            referrer_id=int(referrer_telegram_id),
+            new_user_id=int(message.from_user.id),
+            new_username=message.from_user.username or "—",
+            referrals_count=new_count,
+        )
 
     # ---- проверка подписки (как у тебя было) ----
     is_member = False
