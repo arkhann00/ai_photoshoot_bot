@@ -176,7 +176,7 @@ async def format_balance_message(telegram_id: int) -> str:
     return f"Доступное количество генераций: {int(balance_rub / 49)}"
 
 
-def get_balance_keyboard(currency: str = "XTR") -> InlineKeyboardMarkup:
+def get_balance_keyboard(currency: str = "RUB") -> InlineKeyboardMarkup:
     """
     currency: "RUB" или "XTR"
     По умолчанию — XTR (Stars).
