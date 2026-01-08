@@ -434,7 +434,7 @@ async def open_balance(callback: CallbackQuery) -> None:
     text = await format_balance_message(telegram_id)
 
     # ✅ по умолчанию показываем Stars (можно переключить на ₽)
-    await callback.message.edit_text(text, reply_markup=get_balance_keyboard("XTR"))
+    await callback.message.edit_text(text, reply_markup=get_balance_keyboard("RUB"))
     await callback.answer()
 
 
