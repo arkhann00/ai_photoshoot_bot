@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import quote_plus
 
 from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
@@ -161,9 +162,16 @@ async def _get_existing_referrer_id(telegram_id: int) -> Optional[int]:
         )
         return res.scalar_one_or_none()
 
-def get_referral_partner_keyboard() -> InlineKeyboardMarkup:
+def get_referral_partner_keyboard(link:str) -> InlineKeyboardMarkup:
+    
+    share_url = (
+        "https://t.me/share/url"
+        f"?url={(link)}"
+    )
+    
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="↗️ Поделиться реферальной ссылкой", url=share_url)],
             [InlineKeyboardButton(text="💸 Запросить вывод средств", callback_data="referral_withdraw_request")],
             [InlineKeyboardButton(text="↔️ Перевести на баланс", callback_data="referral_transfer_to_balance")],
             [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_to_main_menu")],
@@ -441,7 +449,7 @@ async def referral_link_command(message: Message):
 
     await message.answer(
         text,
-        reply_markup=get_referral_partner_keyboard(),
+        reply_markup=get_referral_partner_keyboard(link=link),
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -471,7 +479,7 @@ async def referral_link_button(callback: CallbackQuery):
 
     await callback.message.edit_text(
         text,
-        reply_markup=get_referral_partner_keyboard(),
+        reply_markup=get_referral_partner_keyboard(link=link),
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -482,19 +490,19 @@ async def check_subscription(callback: CallbackQuery):
 
     bot = callback.bot
     is_member = False
-    try:
-        member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", callback.from_user.id)
-        if getattr(member, "status", None) in ("creator", "administrator", "member"):
-            is_member = True
-    except Exception:
-        is_member = False
+    # try:
+    #     member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", callback.from_user.id)
+    #     if getattr(member, "status", None) in ("creator", "administrator", "member"):
+    #         is_member = True
+    # except Exception:
+    #     is_member = False
 
-    if not is_member:
-        await callback.message.answer(
-            "Пока не вижу подписки. Подпишись на канал и нажми кнопку снова.",
-            reply_markup=get_subscribe_keyboard(),
-        )
-        return
+    # if not is_member:
+    #     await callback.message.answer(
+    #         "Пока не вижу подписки. Подпишись на канал и нажми кнопку снова.",
+    #         reply_markup=get_subscribe_keyboard(),
+    #     )
+    #     return
 
     # Пользователь подписан — начисляем 2 генерации и отправляем в главное меню
     try:
