@@ -4,6 +4,7 @@ import asyncio
 import base64
 import logging
 import os
+import random
 import re
 import ssl
 import tempfile
@@ -15,7 +16,6 @@ from aiogram import Bot
 from aiogram.types import FSInputFile
 
 from src.config import settings
-
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,9 @@ DEFAULT_TIMEOUT_SECONDS = 800
 MAX_INPUT_PHOTOS = 3
 
 MAX_GENERATION_RETRIES = 10
-RETRY_DELAY_SECONDS = 1  # можно 1-10 сек, чтобы не долбить API без пауз
+RETRY_BASE_DELAY_SECONDS = 2.0  # базовая задержка
+RETRY_MAX_DELAY_SECONDS = 60.0  # максимальная задержка
+RETRY_BACKOFF_MULTIPLIER = 2.0  # множитель для экспоненциального роста
 
 
 def _detect_mime_type(image_bytes: bytes) -> str:
@@ -143,6 +145,25 @@ def _build_prompt(style_title: str, style_prompt: Optional[str]) -> str:
     )
 
 
+def _calculate_retry_delay(attempt: int, retry_after: Optional[str] = None) -> float:
+    """
+    Вычисляет задержку для retry с exponential backoff и jitter.
+    """
+    if retry_after:
+        try:
+            return float(retry_after)
+        except (ValueError, TypeError):
+            pass
+    
+    # Exponential backoff: base * (multiplier ^ (attempt - 1))
+    delay = RETRY_BASE_DELAY_SECONDS * (RETRY_BACKOFF_MULTIPLIER ** (attempt - 1))
+    delay = min(delay, RETRY_MAX_DELAY_SECONDS)
+    
+    # Добавляем jitter (случайность 0-25% от delay) для предотвращения thundering herd
+    jitter = random.uniform(0, delay * 0.25)
+    return delay + jitter
+
+
 async def generate_photoshoot_image(
     style_title: str,
     style_prompt: Optional[str] = None,
@@ -229,90 +250,119 @@ async def generate_photoshoot_image(
 
     # SSL
     ssl_context = ssl.create_default_context(cafile=certifi.where())
-    connector = aiohttp.TCPConnector(ssl=ssl_context)
 
-    data = None
-    resp_text = ""
-
-        # 4) Запрос (10 попыток)
-    last_exc: Exception | None = None
-    last_resp_text: str = ""
-    last_data = None
-
-    # если хочешь "ждать сколько угодно" — отключаем таймаут
-    # (если в settings задано число > 0 — можно оставить число)
-    timeout: aiohttp.ClientTimeout | int
+    # Настройка таймаута
     if timeout_seconds <= 0:
         timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_read=None, sock_connect=None)
     else:
-        timeout = timeout_seconds
+        timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+
+    # 4) Запрос с корректной retry логикой
+    last_exc: Optional[Exception] = None
+    data: Optional[dict] = None
+    resp_text: str = ""
 
     for attempt in range(1, MAX_GENERATION_RETRIES + 1):
-        data = None
-        resp_text = ""
-
+        session: Optional[aiohttp.ClientSession] = None
+        
         try:
-            async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.post(
-                    endpoint,
-                    json=payload,
-                    headers=headers,
-                    timeout=timeout,
-                ) as resp:
-                    resp_text = await resp.text()
-                    try:
-                        data = await resp.json()
-                    except Exception:
-                        data = None
+            # Создаём НОВУЮ сессию для каждой попытки
+            connector = aiohttp.TCPConnector(ssl=ssl_context)
+            session = aiohttp.ClientSession(connector=connector, timeout=timeout)
 
-                    # Неуспешный HTTP статус
-                    if resp.status != 200:
-                        error_code = None
-                        error_message = None
-                        if isinstance(data, dict):
-                            err = data.get("error") or {}
-                            error_code = err.get("code")
-                            error_message = err.get("message")
+            async with session.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+            ) as resp:
+                resp_text = await resp.text()
+                
+                try:
+                    data = await resp.json()
+                except Exception:
+                    data = None
 
-                        logger.error(
-                            "APIYI ошибка (attempt %s/%s): status=%s, code=%s, message=%s, body=%s",
-                            attempt, MAX_GENERATION_RETRIES,
-                            resp.status, error_code, error_message, resp_text,
+                # Обработка rate limit и перегрузки сервера
+                if resp.status in (429, 503):
+                    error_code = None
+                    error_message = ""
+                    
+                    if isinstance(data, dict):
+                        err = data.get("error") or {}
+                        error_code = err.get("code")
+                        error_message = err.get("message", "")
+
+                    retry_after = resp.headers.get("Retry-After")
+                    wait_time = _calculate_retry_delay(attempt, retry_after)
+
+                    logger.warning(
+                        "APIYI rate limit/overload (attempt %s/%s): status=%s, code=%s, message=%s, waiting %.1fs",
+                        attempt, MAX_GENERATION_RETRIES,
+                        resp.status, error_code, error_message, wait_time,
+                    )
+
+                    # Закрываем сессию перед ожиданием
+                    await session.close()
+                    session = None
+
+                    if attempt < MAX_GENERATION_RETRIES:
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        raise RuntimeError(
+                            f"Не удалось сгенерировать изображение после {MAX_GENERATION_RETRIES} попыток: "
+                            f"сервер перегружен (статус {resp.status})"
                         )
 
-                        # Эти ошибки бессмысленно ретраить (обычно)
-                        if error_message and ("imageSize" in error_message or "4K" in error_message):
-                            raise RuntimeError(
-                                "Сервис отклонил запрос 4K (imageSize=4K). "
-                                "Проверь модель/тариф или попробуй модель, которая поддерживает 4K."
-                            )
+                # Фатальные ошибки авторизации/доступа
+                if resp.status in (401, 403):
+                    error_message = ""
+                    if isinstance(data, dict):
+                        err = data.get("error") or {}
+                        error_message = err.get("message", "")
+                    
+                    logger.error(
+                        "APIYI auth error: status=%s, message=%s",
+                        resp.status, error_message,
+                    )
+                    raise RuntimeError(
+                        "Сервис генерации отклонил запрос (ключ/квота/доступ). "
+                        "Проверь API ключ и лимиты."
+                    )
 
-                        if resp.status in (401, 403):
-                            raise RuntimeError(
-                                "Сервис генерации отклонил запрос (ключ/квота/доступ). "
-                                "Проверь API ключ и лимиты."
-                            )
+                # Проверка на ошибку поддержки 4K
+                if resp.status != 200:
+                    error_message = ""
+                    if isinstance(data, dict):
+                        err = data.get("error") or {}
+                        error_message = err.get("message", "")
 
-                        # Остальное — считаем временной ошибкой и ретраим
-                        raise RuntimeError(f"APIYI вернул статус {resp.status}")
+                    if error_message and ("imageSize" in error_message or "4K" in error_message):
+                        logger.error("APIYI 4K error: %s", error_message)
+                        raise RuntimeError(
+                            "Сервис отклонил запрос 4K (imageSize=4K). "
+                            "Проверь модель/тариф или попробуй модель, которая поддерживает 4K."
+                        )
 
-            # если дошли сюда — HTTP 200 и JSON (или хотя бы resp_text) получены
-            last_resp_text = resp_text
-            last_data = data
-            break
+                    logger.error(
+                        "APIYI error (attempt %s/%s): status=%s, body=%s",
+                        attempt, MAX_GENERATION_RETRIES,
+                        resp.status, resp_text,
+                    )
+                    raise RuntimeError(f"APIYI вернул статус {resp.status}")
+
+                # HTTP 200 — успех, выходим из цикла
+                break
 
         except asyncio.CancelledError:
-            # если приложение закрывается — не ретраим
             raise
 
         except Exception as e:
             last_exc = e
-            last_resp_text = resp_text
-            last_data = data
+            error_msg = str(e)
 
-            # если это “фатальная” ошибка — не гоняем 10 раз
-            msg = str(e)
-            if "отклонил запрос 4K" in msg or "ключ/квота/доступ" in msg:
+            # Фатальные ошибки — не ретраим
+            if "отклонил запрос 4K" in error_msg or "ключ/квота/доступ" in error_msg:
                 logger.exception("Фатальная ошибка, ретраи не помогут: %s", e)
                 raise
 
@@ -322,13 +372,21 @@ async def generate_photoshoot_image(
             )
 
             if attempt >= MAX_GENERATION_RETRIES:
-                raise RuntimeError(f"Не удалось сгенерировать изображение после {MAX_GENERATION_RETRIES} попыток: {e}") from e
+                raise RuntimeError(
+                    f"Не удалось сгенерировать изображение после {MAX_GENERATION_RETRIES} попыток: {e}"
+                ) from e
 
-    # после цикла используем last_data/last_resp_text
-    data = last_data
-    resp_text = last_resp_text
+            # Задержка перед следующей попыткой
+            wait_time = _calculate_retry_delay(attempt)
+            logger.info("Retry после ошибки через %.1f сек...", wait_time)
+            await asyncio.sleep(wait_time)
 
-    # 5) Достаём картинку
+        finally:
+            # ОБЯЗАТЕЛЬНО закрываем сессию после каждой попытки
+            if session is not None and not session.closed:
+                await session.close()
+
+    # 5) Достаём картинку из успешного ответа
     image_bytes: Optional[bytes] = None
     mime_type_out: str = "image/jpeg"
 
@@ -377,10 +435,8 @@ async def generate_photoshoot_image(
         elif "webp" in mime_type_out:
             ext = ".webp"
 
-        # безопасное имя
         joined_ids = "_".join(file_ids)
         slug = _safe_slug(joined_ids)
-
         suffix = f"{len(file_ids)}p"
         file_path = os.path.join(tmp_dir, f"photoshoot_{slug}_{suffix}{ext}")
 

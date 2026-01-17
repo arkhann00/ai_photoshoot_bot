@@ -721,9 +721,12 @@ async def successful_payment_handler(message: Message) -> None:
                 pass
 
             try:
+                
+                current_username = await message.from_user.username
+                
                 ref_msg = (
                     "💸 Реферальное начисление!\n\n"
-                    f"Твой реферал пополнил баланс на <b>{paid_amount_rub_for_logs} ₽</b>.\n"
+                    f"Твой реферал {current_username} пополнил баланс на <b>{paid_amount_rub_for_logs} ₽</b>.\n"
                     f"Тебе начислено: <b>{reward} ₽</b> — это <b>{REF_TOPUP_PERCENT}%</b> от суммы ✅"
                 )
                 await bot.send_message(chat_id=int(referrer_id), text=ref_msg, parse_mode="HTML")
@@ -735,7 +738,7 @@ async def successful_payment_handler(message: Message) -> None:
             await send_admin_log(
                 bot,
                 (
-                    "🤝 <b>Реферальное начисление с пополнения</b>\n"
+                    f"🤝 <b>Реферальное начисление с пополнения от {current_username}</b>\n"
                     f"Номинал пакета: <b>{paid_amount_rub_for_logs} ₽</b>\n"
                     f"Процент: <b>{REF_TOPUP_PERCENT}%</b>\n"
                     f"Начислено пригласителю: <b>{reward} ₽</b>"
