@@ -1,9 +1,11 @@
 # src/handlers/balance.py
 
+
 import json
 import math
 from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
+
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
@@ -17,6 +19,7 @@ from aiogram.types import (
     SuccessfulPayment,
 )
 
+
 from src.db.repositories.users import ensure_user_is_referral
 from src.constants import PHOTOSHOOT_PRICE
 from src.db import (
@@ -27,22 +30,29 @@ from src.db import (
 )
 from src.keyboards import get_start_keyboard
 
+
 router = Router()
 
+
 ADM_GROUP_ID = -5075627878
+
 
 # ✅ Чат для логов пополнений/ошибок
 PAYMENTS_LOG_CHAT_ID = -5138363601
 
+
 # ✅ Провайдер для RUB оплат (ЮKassa/CloudPayments и т.п.)
 PAYMENT_PROVIDER_TOKEN = "390540012:LIVE:84036"
+
 
 # ✅ Курс: сколько ₽ мы считаем за 1 ⭐ (для пересчёта пакетов)
 # Меняй только это значение, чтобы обновить цены в звёздах.
 RUB_PER_STAR = 3.0
 
+
 # ✅ Минимальная сумма пополнения
 MIN_TOPUP_RUB = 99
+
 
 # Тарифы (как отображаем пользователю)
 PHOTO_PACK_PRICES_RUB: Dict[int, int] = {
@@ -53,6 +63,7 @@ PHOTO_PACK_PRICES_RUB: Dict[int, int] = {
     50: 749,  # ✅ NEW
 }
 
+
 # Пакеты пополнения: callback_data -> сумма_руб (СУММА ОПЛАТЫ)
 TOPUP_OPTIONS: Dict[str, int] = {
     "topup_99": 99,
@@ -61,6 +72,7 @@ TOPUP_OPTIONS: Dict[str, int] = {
     "topup_199": 199,
     "topup_749": 749,  # ✅ NEW
 }
+
 
 # Сколько фотосессий выдаём за пакет
 TOPUP_PACK_PHOTOS: Dict[str, int] = {
@@ -71,6 +83,7 @@ TOPUP_PACK_PHOTOS: Dict[str, int] = {
     "topup_749": 50,  # ✅ NEW
 }
 
+
 # ✅ Сколько рублей зачисляем на баланс за пакет
 TOPUP_PACK_CREDIT_RUB: Dict[str, int] = {
     "topup_99": 99,  # 2 фотосессии, но зачисляем 99 ₽
@@ -80,10 +93,12 @@ TOPUP_PACK_CREDIT_RUB: Dict[str, int] = {
     "topup_749": 50 * int(PHOTOSHOOT_PRICE),  # ✅ NEW (50 генераций)
 }
 
+
 TAX_SYSTEM_CODE = 1
 VAT_CODE = 1
 PAYMENT_MODE = "full_payment"
 PAYMENT_SUBJECT = "service"
+
 
 REF_TOPUP_PERCENT = 10  # 10% от суммы пополнения
 
@@ -157,6 +172,7 @@ async def send_payment_log(
 # =====================================================================
 # Вспомогательные функции (через БД)
 # =====================================================================
+
 
 async def get_balance_rub(telegram_id: int) -> int:
     balance = await db_get_user_balance(telegram_id)
@@ -332,6 +348,7 @@ def parse_topup_cb(data: str) -> tuple[Optional[str], Optional[str]]:
 # Быстрое пополнение (оставлено для совместимости)
 # =====================================================================
 
+
 async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
     """
     ⚠️ Имя оставлено для совместимости.
@@ -428,6 +445,7 @@ async def send_quick_topup_invoice_49(callback: CallbackQuery) -> None:
 # Вход в раздел «Баланс»
 # =====================================================================
 
+
 @router.callback_query(F.data == "balance")
 async def open_balance(callback: CallbackQuery) -> None:
     telegram_id = callback.from_user.id
@@ -452,6 +470,7 @@ async def balance_currency_toggle(callback: CallbackQuery) -> None:
 # Выбор готового пакета пополнения (НОВЫЙ callback)
 # =====================================================================
 
+
 @router.callback_query(F.data.startswith("topup:"))
 async def choose_topup_package_new(callback: CallbackQuery) -> None:
     await callback.answer()
@@ -471,6 +490,7 @@ async def choose_topup_package_new(callback: CallbackQuery) -> None:
 # Выбор готового пакета пополнения (СТАРЫЙ callback: topup_99)
 # Оставляем, чтобы ничего не сломать, если где-то в проекте остались старые кнопки.
 # =====================================================================
+
 
 @router.callback_query(F.data.in_(tuple(TOPUP_OPTIONS.keys())))
 async def choose_topup_package_legacy(callback: CallbackQuery) -> None:
@@ -608,6 +628,7 @@ async def _send_invoice_for_option(*, callback: CallbackQuery, currency: str, op
 # Pre Checkout
 # =====================================================================
 
+
 @router.pre_checkout_query()
 async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery, bot: Bot) -> None:
     payload = pre_checkout_query.invoice_payload
@@ -661,6 +682,7 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery, bot: Bot) -
 # =====================================================================
 # Успешный платёж
 # =====================================================================
+
 
 @router.message(F.successful_payment)
 async def successful_payment_handler(message: Message) -> None:
@@ -720,10 +742,10 @@ async def successful_payment_handler(message: Message) -> None:
             except Exception:
                 pass
 
+            # ✅ ИСПРАВЛЕНИЕ: убрали await перед username и вынесли переменную за пределы try-except
+            current_username = message.from_user.username or "Неизвестный"
+
             try:
-                
-                current_username = await message.from_user.username
-                
                 ref_msg = (
                     "💸 Реферальное начисление!\n\n"
                     f"Твой реферал {current_username} пополнил баланс на <b>{paid_amount_rub_for_logs} ₽</b>.\n"
@@ -795,6 +817,7 @@ async def successful_payment_handler(message: Message) -> None:
 # Сообщение «платёж не прошёл»
 # =====================================================================
 
+
 @router.callback_query(F.data == "payment_failed_show_message")
 async def payment_failed_message(callback: CallbackQuery) -> None:
     user_id = callback.from_user.id
@@ -828,6 +851,7 @@ async def payment_failed_message(callback: CallbackQuery) -> None:
 # =====================================================================
 # Paysupport (для продакшена Stars)
 # =====================================================================
+
 
 @router.message(F.text == "/paysupport")
 async def paysupport(message: Message) -> None:
