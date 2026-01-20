@@ -39,7 +39,7 @@ from src.db.repositories.promo_codes import (
     delete_promo_code,
     get_promo_code_by_code,
 )
-from src.db.repositories.users import (get_all_users, clear_user_balance)
+from src.db.repositories.users import (get_all_users, clear_user_balance, get_referrals_for_user)
 from src.db import (
     async_session,
     get_or_create_user,
@@ -1544,7 +1544,7 @@ async def api_new_styles_female(request: Request) -> List[StyleResponse]:
     "/api/admin/users/referral",
     response_model=List[AdminReferralResponse],
 )
-async def get_referrals_for_user(
+async def get_referrals_for_user_by_id(
     telegram_id: int = Query(..., ge=1, description="telegram_id реферера"),
     user: CurrentUser = Depends(get_current_user),
 ) -> List[AdminReferralResponse]:
