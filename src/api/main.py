@@ -1539,3 +1539,40 @@ async def api_new_styles_female(request: Request) -> List[StyleResponse]:
         )
         for s in styles
     ]
+    
+@app.get(
+    "/api/admin/users/referral",
+    response_model=List[AdminReferralResponse],
+)
+async def get_referrals_for_user(
+    telegram_id: int = Query(..., ge=1, description="telegram_id реферера"),
+    user: CurrentUser = Depends(get_current_user),
+) -> List[AdminReferralResponse]:
+    # Проверяем, что текущий пользователь админ
+    ensure_admin(user)
+
+    # Получаем всех пользователей, у которых referrer_id == telegram_id
+    referrals: list[User] = await get_referrals_for_user(referrer_telegram_id=telegram_id)
+
+    if not referrals:
+        # Можно вернуть [], но для наглядности в админке иногда полезно 404
+        # Если хочешь всегда 200 — убери этот блок
+        return []
+
+    result: list[AdminReferralResponse] = []
+    for ref in referrals:
+        created_at_str = (
+            ref.created_at.isoformat()
+            if getattr(ref, "created_at", None) is not None
+            else None
+        )
+        result.append(
+            AdminReferralResponse(
+                telegram_id=ref.telegram_id,
+                username=ref.username,
+                referrals_count=0,       
+                earned_rub=int(ref.referral_earned_rub or 0),
+            )
+        )
+
+    return result
