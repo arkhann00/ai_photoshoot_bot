@@ -8,7 +8,10 @@ import random
 import re
 import ssl
 import tempfile
-from typing import Optional, List, Sequence, Union
+import time
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional, List, Sequence, Union, Dict, Any
 
 import aiohttp
 import certifi
@@ -19,28 +22,65 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Провайдер (APIYI)
+# Константы
 APIYI_BASE_URL = "https://api.apiyi.com"
-
-# Модель по умолчанию: поддержка 1K/2K/4K (обычно)
 APIYI_MODEL_NAME_DEFAULT = "gemini-3-pro-image-preview"
+DEFAULT_TIMEOUT_SECONDS = 120
+MAX_INPUT_PHOTOS = 2  # Уменьшено для стабильности
+MAX_GENERATION_RETRIES = 5  # Уменьшено количество попыток
+RETRY_BASE_DELAY_SECONDS = 2.0
+RETRY_MAX_DELAY_SECONDS = 120.0
+RETRY_BACKOFF_MULTIPLIER = 2.0
 
-# 4K может занимать дольше
-DEFAULT_TIMEOUT_SECONDS = 800
+# Глобальные ограничители
+_api_semaphore = None
+_rate_limit_semaphore = None
 
-# Ограничение по твоему требованию
-MAX_INPUT_PHOTOS = 3
 
-MAX_GENERATION_RETRIES = 10
-RETRY_BASE_DELAY_SECONDS = 2.0  # базовая задержка
-RETRY_MAX_DELAY_SECONDS = 60.0  # максимальная задержка
-RETRY_BACKOFF_MULTIPLIER = 2.0  # множитель для экспоненциального роста
+class ImageSize(Enum):
+    SIZE_1K = "1K"
+    SIZE_2K = "2K"
+    SIZE_4K = "4K"
+
+
+class APIErrorType(Enum):
+    RATE_LIMIT = "rate_limit"
+    SERVER_ERROR = "server_error"
+    TIMEOUT = "timeout"
+    NETWORK = "network"
+    AUTH = "auth"
+    VALIDATION = "validation"
+
+
+@dataclass
+class APIRequestConfig:
+    """Конфигурация запроса к API"""
+    timeout: int = DEFAULT_TIMEOUT_SECONDS
+    max_retries: int = MAX_GENERATION_RETRIES
+    image_size: ImageSize = ImageSize.SIZE_2K  # По умолчанию 2K для стабильности
+    max_concurrent: int = 3  # Максимум одновременных запросов
+    use_safety_settings: bool = True
+
+
+def _get_api_semaphore() -> asyncio.Semaphore:
+    """Получение глобального семафора для ограничения запросов"""
+    global _api_semaphore
+    if _api_semaphore is None:
+        max_concurrent = getattr(settings, "APIYI_MAX_CONCURRENT", 3)
+        _api_semaphore = asyncio.Semaphore(max_concurrent)
+    return _api_semaphore
+
+
+def _get_rate_limit_semaphore() -> asyncio.Semaphore:
+    """Семафор для ограничения запросов при rate limit"""
+    global _rate_limit_semaphore
+    if _rate_limit_semaphore is None:
+        _rate_limit_semaphore = asyncio.Semaphore(1)
+    return _rate_limit_semaphore
 
 
 def _detect_mime_type(image_bytes: bytes) -> str:
-    """
-    Простейшее определение mime-типа по сигнатуре файла.
-    """
+    """Определение MIME-типа изображения"""
     if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
@@ -51,14 +91,7 @@ def _detect_mime_type(image_bytes: bytes) -> str:
 
 
 def _split_file_ids(user_photo_file_id: str) -> List[str]:
-    """
-    Позволяет передавать 1..3 file_id одной строкой:
-    - "id1"
-    - "id1,id2"
-    - "id1 id2 id3"
-    - "id1\nid2\nid3"
-    - "id1;id2|id3"
-    """
+    """Разделение строки с file_id на список"""
     raw = (user_photo_file_id or "").strip()
     if not raw:
         return []
@@ -70,18 +103,12 @@ def _normalize_input_file_ids(
     user_photo_file_id: Optional[str],
     user_photo_file_ids: Optional[Union[Sequence[str], str]],
 ) -> List[str]:
-    """
-    Приводит вход к списку file_id, поддерживает:
-    - user_photo_file_id: str (один или "id1 id2")
-    - user_photo_file_ids: list[str] / tuple[str] / str
-    """
+    """Нормализация входных file_id"""
     out: List[str] = []
 
-    # 1) старый параметр (строка с разделителями)
     if user_photo_file_id:
         out.extend(_split_file_ids(user_photo_file_id))
 
-    # 2) новый параметр (список или строка)
     if user_photo_file_ids:
         if isinstance(user_photo_file_ids, str):
             out.extend(_split_file_ids(user_photo_file_ids))
@@ -90,7 +117,6 @@ def _normalize_input_file_ids(
                 if x and str(x).strip():
                     out.append(str(x).strip())
 
-    # дедуп, сохраняя порядок
     seen = set()
     uniq: List[str] = []
     for fid in out:
@@ -103,9 +129,7 @@ def _normalize_input_file_ids(
 
 
 def _safe_slug(value: str, max_len: int = 80) -> str:
-    """
-    Безопасный кусок для имени файла (temp).
-    """
+    """Создание безопасного имени файла"""
     s = re.sub(r"[^0-9A-Za-z_-]+", "_", value).strip("_")
     if not s:
         s = "img"
@@ -113,24 +137,18 @@ def _safe_slug(value: str, max_len: int = 80) -> str:
 
 
 async def _download_telegram_photo(bot: Bot, file_id: str) -> bytes:
-    """
-    Скачивает фото из Telegram по file_id и возвращает байты.
-    """
-    tg_file = await bot.get_file(file_id)
-    stream = await bot.download_file(tg_file.file_path)
-
-    if hasattr(stream, "read"):
-        return stream.read()
-
-    return stream
+    """Скачивание фото из Telegram"""
+    try:
+        tg_file = await bot.get_file(file_id)
+        stream = await bot.download_file(tg_file.file_path)
+        return stream.read() if hasattr(stream, "read") else stream
+    except Exception as e:
+        logger.error(f"Ошибка скачивания фото {file_id}: {e}")
+        raise RuntimeError(f"Не удалось скачать фото: {e}")
 
 
 def _build_prompt(style_title: str, style_prompt: Optional[str]) -> str:
-    """
-    Формируем итоговый текст промпта.
-    Если есть кастомный prompt для стиля — используем его,
-    иначе собираем базовый вариант по названию стиля.
-    """
+    """Сборка промпта"""
     if style_prompt:
         return style_prompt
 
@@ -145,23 +163,154 @@ def _build_prompt(style_title: str, style_prompt: Optional[str]) -> str:
     )
 
 
-def _calculate_retry_delay(attempt: int, retry_after: Optional[str] = None) -> float:
-    """
-    Вычисляет задержку для retry с exponential backoff и jitter.
-    """
-    if retry_after:
-        try:
-            return float(retry_after)
-        except (ValueError, TypeError):
-            pass
+def _calculate_retry_delay(attempt: int, error_type: APIErrorType = None) -> float:
+    """Расчет задержки для повторной попытки"""
+    if error_type == APIErrorType.RATE_LIMIT:
+        # Для rate limit ждем дольше
+        base_delay = min(30 * attempt, 300)  # До 5 минут
+    elif error_type == APIErrorType.SERVER_ERROR:
+        # Для серверных ошибок умеренная задержка
+        base_delay = RETRY_BASE_DELAY_SECONDS * (RETRY_BACKOFF_MULTIPLIER ** (attempt - 1))
+        base_delay = min(base_delay, 60)
+    else:
+        # Стандартный exponential backoff
+        base_delay = RETRY_BASE_DELAY_SECONDS * (RETRY_BACKOFF_MULTIPLIER ** (attempt - 1))
     
-    # Exponential backoff: base * (multiplier ^ (attempt - 1))
-    delay = RETRY_BASE_DELAY_SECONDS * (RETRY_BACKOFF_MULTIPLIER ** (attempt - 1))
-    delay = min(delay, RETRY_MAX_DELAY_SECONDS)
+    base_delay = min(base_delay, RETRY_MAX_DELAY_SECONDS)
     
-    # Добавляем jitter (случайность 0-25% от delay) для предотвращения thundering herd
-    jitter = random.uniform(0, delay * 0.25)
-    return delay + jitter
+    # Добавляем jitter (0-25%)
+    jitter = random.uniform(0, base_delay * 0.25)
+    delay = base_delay + jitter
+    
+    logger.debug(f"Задержка для попытки {attempt}: {delay:.1f} сек")
+    return delay
+
+
+def _create_safety_settings() -> List[Dict[str, str]]:
+    """Создание настроек безопасности"""
+    return [
+        {
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "threshold": "BLOCK_NONE"
+        },
+        {
+            "category": "HARM_CATEGORY_HATE_SPEECH", 
+            "threshold": "BLOCK_NONE"
+        },
+        {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "threshold": "BLOCK_NONE"
+        },
+        {
+            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+            "threshold": "BLOCK_NONE"
+        }
+    ]
+
+
+def _create_payload(parts: List[Dict], image_size: ImageSize, use_safety: bool = True) -> Dict[str, Any]:
+    """Создание payload для запроса"""
+    payload = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {
+            "responseModalities": ["IMAGE"],
+            "imageConfig": {
+                "aspectRatio": "3:4",
+                "imageSize": image_size.value,
+            },
+        },
+    }
+    
+    if use_safety:
+        payload["safetySettings"] = _create_safety_settings()
+    
+    return payload
+
+
+async def _make_api_request(
+    endpoint: str,
+    payload: Dict,
+    headers: Dict,
+    config: APIRequestConfig,
+    attempt: int,
+    session: aiohttp.ClientSession
+) -> Dict:
+    """Выполнение запроса к API с обработкой ошибок"""
+    start_time = time.time()
+    
+    try:
+        async with session.post(
+            endpoint,
+            json=payload,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=config.timeout)
+        ) as resp:
+            
+            response_time = time.time() - start_time
+            resp_text = await resp.text()
+            
+            logger.debug(f"API ответ за {response_time:.2f} сек, статус: {resp.status}")
+            
+            # Обработка успешного ответа
+            if resp.status == 200:
+                try:
+                    return await resp.json()
+                except Exception as e:
+                    logger.error(f"Ошибка парсинга JSON: {e}, текст ответа: {resp_text[:200]}")
+                    raise RuntimeError("Некорректный ответ от сервера API")
+            
+            # Обработка rate limit (429)
+            if resp.status == 429:
+                retry_after = resp.headers.get("Retry-After", "60")
+                try:
+                    wait_time = float(retry_after)
+                except ValueError:
+                    wait_time = _calculate_retry_delay(attempt, APIErrorType.RATE_LIMIT)
+                
+                logger.warning(
+                    f"Rate limit (попытка {attempt}/{config.max_retries}): "
+                    f"status={resp.status}, waiting {wait_time:.1f} сек"
+                )
+                
+                async with _get_rate_limit_semaphore():
+                    await asyncio.sleep(wait_time)
+                
+                raise RuntimeError(f"Rate limit, пробуем снова")
+            
+            # Обработка server errors (500, 502, 503, 504)
+            if resp.status in (500, 502, 503, 504):
+                logger.warning(
+                    f"Server error (попытка {attempt}/{config.max_retries}): "
+                    f"status={resp.status}, response: {resp_text[:200]}"
+                )
+                raise RuntimeError(f"Серверная ошибка {resp.status}")
+            
+            # Обработка client errors (400, 401, 403, 404)
+            if resp.status in (400, 401, 403, 404):
+                error_info = resp_text[:200]
+                logger.error(f"Client error: status={resp.status}, response: {error_info}")
+                
+                if resp.status == 401:
+                    raise RuntimeError("Ошибка авторизации API. Проверьте ключ.")
+                elif resp.status == 403:
+                    raise RuntimeError("Доступ запрещен. Проверьте лимиты API.")
+                elif resp.status == 400:
+                    raise RuntimeError("Некорректный запрос к API.")
+                else:
+                    raise RuntimeError(f"Ошибка клиента: {resp.status}")
+            
+            # Обработка других статусов
+            logger.error(f"Неизвестный статус {resp.status}: {resp_text[:200]}")
+            raise RuntimeError(f"Неизвестная ошибка API: {resp.status}")
+    
+    except asyncio.TimeoutError:
+        response_time = time.time() - start_time
+        logger.warning(f"Timeout (попытка {attempt}): запрос занял {response_time:.1f} сек")
+        raise RuntimeError(f"Таймаут запроса ({config.timeout} сек)")
+    
+    except aiohttp.ClientError as e:
+        logger.error(f"Сетевая ошибка (попытка {attempt}): {e}")
+        raise RuntimeError(f"Сетевая ошибка: {str(e)}")
 
 
 async def generate_photoshoot_image(
@@ -172,278 +321,301 @@ async def generate_photoshoot_image(
     user_photo_file_ids: Optional[Union[Sequence[str], str]] = None,
 ) -> FSInputFile:
     """
-    Генерация фотосессии через APIYI (Google-формат generateContent).
-
-    Совместимость по входу:
-    - Можно передавать ОДНО фото через user_photo_file_id="id"
-    - Можно передавать 1..3 фото через user_photo_file_id="id1 id2"
-    - Можно передавать список 1..3 фото через user_photo_file_ids=[id1, id2, id3]
-    - Можно передавать строку через user_photo_file_ids="id1,id2"
-
-    Запрашиваем 4K в ответ (если модель/тариф поддерживают).
+    Генерация фотосессии через APIYI с улучшенной обработкой ошибок.
+    
+    Args:
+        style_title: Название стиля
+        style_prompt: Кастомный промпт (опционально)
+        user_photo_file_id: File_id фото или строка с несколькими file_id
+        bot: Экземпляр бота Telegram
+        user_photo_file_ids: Список или строка с file_id
+        
+    Returns:
+        FSInputFile: Сгенерированное изображение
+        
+    Raises:
+        RuntimeError: При ошибках генерации
     """
-
+    
+    # Валидация входных параметров
     if bot is None:
         raise RuntimeError("Параметр bot не передан в generate_photoshoot_image().")
-
-    # Совместимость: ключ можно хранить в COMET_API_KEY (как раньше),
-    # либо завести отдельный APIYI_API_KEY.
+    
+    # Получение конфигурации API
     api_key = getattr(settings, "APIYI_API_KEY", None) or getattr(settings, "COMET_API_KEY", None)
     if not api_key:
-        raise RuntimeError("API ключ не задан. Укажи settings.APIYI_API_KEY или settings.COMET_API_KEY.")
-
+        raise RuntimeError("API ключ не задан. Укажите settings.APIYI_API_KEY или settings.COMET_API_KEY.")
+    
     model_name = getattr(settings, "APIYI_MODEL_NAME", None) or APIYI_MODEL_NAME_DEFAULT
     endpoint = f"{APIYI_BASE_URL}/v1beta/models/{model_name}:generateContent"
-
-    timeout_seconds = int(getattr(settings, "APIYI_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
-
-    # 0) Разбираем вход: 1..3 file_id
-    file_ids = _normalize_input_file_ids(user_photo_file_id=user_photo_file_id, user_photo_file_ids=user_photo_file_ids)
+    
+    # Конфигурация запроса
+    config = APIRequestConfig(
+        timeout=int(getattr(settings, "APIYI_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)),
+        max_retries=int(getattr(settings, "APIYI_MAX_RETRIES", MAX_GENERATION_RETRIES)),
+        image_size=ImageSize(getattr(settings, "APIYI_IMAGE_SIZE", "2K")),
+        max_concurrent=int(getattr(settings, "APIYI_MAX_CONCURRENT", 3)),
+        use_safety_settings=getattr(settings, "APIYI_USE_SAFETY", True)
+    )
+    
+    # Нормализация входных file_id
+    file_ids = _normalize_input_file_ids(
+        user_photo_file_id=user_photo_file_id,
+        user_photo_file_ids=user_photo_file_ids
+    )
+    
     if not file_ids:
-        raise RuntimeError("Не передан file_id фото пользователя (user_photo_file_id/user_photo_file_ids).")
+        raise RuntimeError("Не передан file_id фото пользователя.")
+    
     if len(file_ids) > MAX_INPUT_PHOTOS:
+        logger.warning(f"Слишком много фото ({len(file_ids)}), ограничиваю до {MAX_INPUT_PHOTOS}")
         file_ids = file_ids[:MAX_INPUT_PHOTOS]
-
-    # 1) Скачиваем 1..3 фото из Telegram
+    
+    # Скачивание фото из Telegram
     photos_bytes: List[bytes] = []
-    try:
-        for fid in file_ids:
+    for fid in file_ids:
+        try:
             b = await _download_telegram_photo(bot, fid)
             photos_bytes.append(b)
-    except Exception as e:
-        logger.exception("Ошибка при скачивании фото из Telegram: %s", e)
-        raise RuntimeError("Не удалось скачать фото из Telegram") from e
-
+            
+            # Проверка размера фото
+            if len(b) > 10 * 1024 * 1024:  # 10MB
+                logger.warning(f"Фото {fid} слишком большое: {len(b)/1024/1024:.1f}MB")
+        except Exception as e:
+            logger.exception(f"Ошибка скачивания фото {fid}: {e}")
+            raise RuntimeError(f"Не удалось скачать фото: {e}")
+    
+    # Подготовка промпта
     prompt_text = _build_prompt(style_title=style_title, style_prompt=style_prompt)
-
-    # 2) Собираем parts: сначала текст, затем 1..3 inline_data
+    
+    # Сборка частей запроса
     parts = [{"text": prompt_text}]
     for b in photos_bytes:
         mime_type_in = _detect_mime_type(b)
         image_b64 = base64.b64encode(b).decode("utf-8")
-        parts.append(
-            {
-                "inline_data": {
-                    "mime_type": mime_type_in,
-                    "data": image_b64,
-                }
+        parts.append({
+            "inline_data": {
+                "mime_type": mime_type_in,
+                "data": image_b64,
             }
-        )
-
-    # 3) Просим 4K (важно: модель должна поддерживать 4K)
-    payload = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {
-            "responseModalities": ["IMAGE"],
-            "imageConfig": {
-                "aspectRatio": "3:4",
-                "imageSize": "4K",
-            },
-        },
-    }
-
+        })
+    
+    # Создание payload
+    current_image_size = config.image_size
+    payload = _create_payload(parts, current_image_size, config.use_safety_settings)
+    
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "Accept": "*/*",
+        "Accept": "application/json",
+        "User-Agent": "PhotoshootBot/1.0"
     }
-
-    # SSL
+    
+    # Подготовка SSL контекста
     ssl_context = ssl.create_default_context(cafile=certifi.where())
-
-    # Настройка таймаута
-    if timeout_seconds <= 0:
-        timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_read=None, sock_connect=None)
-    else:
-        timeout = aiohttp.ClientTimeout(total=timeout_seconds)
-
-    # 4) Запрос с корректной retry логикой
-    last_exc: Optional[Exception] = None
-    data: Optional[dict] = None
-    resp_text: str = ""
-
-    for attempt in range(1, MAX_GENERATION_RETRIES + 1):
-        session: Optional[aiohttp.ClientSession] = None
-        
-        try:
-            # Создаём НОВУЮ сессию для каждой попытки
-            connector = aiohttp.TCPConnector(ssl=ssl_context)
-            session = aiohttp.ClientSession(connector=connector, timeout=timeout)
-
-            async with session.post(
-                endpoint,
-                json=payload,
-                headers=headers,
-            ) as resp:
-                resp_text = await resp.text()
-                
-                try:
-                    data = await resp.json()
-                except Exception:
-                    data = None
-
-                # Обработка rate limit и перегрузки сервера
-                if resp.status in (429, 503):
-                    error_code = None
-                    error_message = ""
-                    
-                    if isinstance(data, dict):
-                        err = data.get("error") or {}
-                        error_code = err.get("code")
-                        error_message = err.get("message", "")
-
-                    retry_after = resp.headers.get("Retry-After")
-                    wait_time = _calculate_retry_delay(attempt, retry_after)
-
-                    logger.warning(
-                        "APIYI rate limit/overload (attempt %s/%s): status=%s, code=%s, message=%s, waiting %.1fs",
-                        attempt, MAX_GENERATION_RETRIES,
-                        resp.status, error_code, error_message, wait_time,
-                    )
-
-                    # Закрываем сессию перед ожиданием
-                    await session.close()
-                    session = None
-
-                    if attempt < MAX_GENERATION_RETRIES:
-                        await asyncio.sleep(wait_time)
-                        continue
-                    else:
-                        raise RuntimeError(
-                            f"Не удалось сгенерировать изображение после {MAX_GENERATION_RETRIES} попыток: "
-                            f"сервер перегружен (статус {resp.status})"
-                        )
-
-                # Фатальные ошибки авторизации/доступа
-                if resp.status in (401, 403):
-                    error_message = ""
-                    if isinstance(data, dict):
-                        err = data.get("error") or {}
-                        error_message = err.get("message", "")
-                    
-                    logger.error(
-                        "APIYI auth error: status=%s, message=%s",
-                        resp.status, error_message,
-                    )
-                    raise RuntimeError(
-                        "Сервис генерации отклонил запрос (ключ/квота/доступ). "
-                        "Проверь API ключ и лимиты."
-                    )
-
-                # Проверка на ошибку поддержки 4K
-                if resp.status != 200:
-                    error_message = ""
-                    if isinstance(data, dict):
-                        err = data.get("error") or {}
-                        error_message = err.get("message", "")
-
-                    if error_message and ("imageSize" in error_message or "4K" in error_message):
-                        logger.error("APIYI 4K error: %s", error_message)
-                        raise RuntimeError(
-                            "Сервис отклонил запрос 4K (imageSize=4K). "
-                            "Проверь модель/тариф или попробуй модель, которая поддерживает 4K."
-                        )
-
-                    logger.error(
-                        "APIYI error (attempt %s/%s): status=%s, body=%s",
-                        attempt, MAX_GENERATION_RETRIES,
-                        resp.status, resp_text,
-                    )
-                    raise RuntimeError(f"APIYI вернул статус {resp.status}")
-
-                # HTTP 200 — успех, выходим из цикла
-                break
-
-        except asyncio.CancelledError:
-            raise
-
-        except Exception as e:
-            last_exc = e
-            error_msg = str(e)
-
-            # Фатальные ошибки — не ретраим
-            if "отклонил запрос 4K" in error_msg or "ключ/квота/доступ" in error_msg:
-                logger.exception("Фатальная ошибка, ретраи не помогут: %s", e)
-                raise
-
-            logger.exception(
-                "Ошибка при запросе к APIYI (attempt %s/%s): %s",
-                attempt, MAX_GENERATION_RETRIES, e,
+    
+    # Основной цикл с попытками
+    last_error = None
+    data = None
+    
+    # Используем семафор для ограничения одновременных запросов
+    async with _get_api_semaphore():
+        for attempt in range(1, config.max_retries + 1):
+            logger.info(f"Попытка генерации {attempt}/{config.max_retries}")
+            
+            # Динамическое уменьшение размера при ошибках
+            if attempt > 1 and current_image_size != ImageSize.SIZE_1K:
+                if current_image_size == ImageSize.SIZE_4K:
+                    current_image_size = ImageSize.SIZE_2K
+                    logger.info(f"Уменьшаю размер изображения до {current_image_size.value}")
+                    payload = _create_payload(parts, current_image_size, config.use_safety_settings)
+                elif current_image_size == ImageSize.SIZE_2K:
+                    current_image_size = ImageSize.SIZE_1K
+                    logger.info(f"Уменьшаю размер изображения до {current_image_size.value}")
+                    payload = _create_payload(parts, current_image_size, config.use_safety_settings)
+            
+            # Создание новой сессии для каждой попытки
+            connector = aiohttp.TCPConnector(
+                ssl=ssl_context,
+                limit=10,
+                ttl_dns_cache=300
             )
-
-            if attempt >= MAX_GENERATION_RETRIES:
-                raise RuntimeError(
-                    f"Не удалось сгенерировать изображение после {MAX_GENERATION_RETRIES} попыток: {e}"
-                ) from e
-
-            # Задержка перед следующей попыткой
-            wait_time = _calculate_retry_delay(attempt)
-            logger.info("Retry после ошибки через %.1f сек...", wait_time)
-            await asyncio.sleep(wait_time)
-
-        finally:
-            # ОБЯЗАТЕЛЬНО закрываем сессию после каждой попытки
-            if session is not None and not session.closed:
-                await session.close()
-
-    # 5) Достаём картинку из успешного ответа
-    image_bytes: Optional[bytes] = None
-    mime_type_out: str = "image/jpeg"
-
+            
+            try:
+                async with aiohttp.ClientSession(
+                    connector=connector,
+                    timeout=aiohttp.ClientTimeout(total=config.timeout)
+                ) as session:
+                    
+                    data = await _make_api_request(
+                        endpoint=endpoint,
+                        payload=payload,
+                        headers=headers,
+                        config=config,
+                        attempt=attempt,
+                        session=session
+                    )
+                    
+                    # Успешный запрос
+                    logger.info(f"Успешная генерация на попытке {attempt}")
+                    break
+                    
+            except RuntimeError as e:
+                last_error = e
+                error_msg = str(e)
+                
+                # Фатальные ошибки - не повторяем
+                if any(fatal in error_msg.lower() for fatal in ["авторизации", "доступ запрещен", "некорректный запрос"]):
+                    logger.error(f"Фатальная ошибка: {error_msg}")
+                    raise e
+                
+                # Последняя попытка
+                if attempt == config.max_retries:
+                    logger.error(f"Все попытки исчерпаны. Последняя ошибка: {error_msg}")
+                    raise RuntimeError(
+                        f"Не удалось сгенерировать изображение после {config.max_retries} попыток. "
+                        f"Попробуйте позже или выберите другой стиль."
+                    )
+                
+                # Рассчет задержки для повторной попытки
+                error_type = APIErrorType.SERVER_ERROR
+                if "rate" in error_msg.lower():
+                    error_type = APIErrorType.RATE_LIMIT
+                elif "таймаут" in error_msg.lower() or "timeout" in error_msg.lower():
+                    error_type = APIErrorType.TIMEOUT
+                
+                wait_time = _calculate_retry_delay(attempt, error_type)
+                logger.info(f"Повтор через {wait_time:.1f} сек...")
+                await asyncio.sleep(wait_time)
+                
+            except Exception as e:
+                last_error = e
+                logger.exception(f"Неожиданная ошибка на попытке {attempt}: {e}")
+                
+                if attempt == config.max_retries:
+                    raise RuntimeError(
+                        f"Неожиданная ошибка генерации. Попробуйте позже."
+                    )
+                
+                wait_time = _calculate_retry_delay(attempt, APIErrorType.SERVER_ERROR)
+                await asyncio.sleep(wait_time)
+    
+    # Обработка успешного ответа
+    if not data:
+        raise RuntimeError("Пустой ответ от API")
+    
+    # Извлечение изображения из ответа
+    image_bytes = None
+    mime_type_out = "image/jpeg"
+    
     try:
-        if not isinstance(data, dict):
-            logger.error("Некорректный ответ (не JSON). body=%s", resp_text)
-            raise RuntimeError("Сервис вернул некорректный ответ")
-
         candidates = data.get("candidates") or []
         if not candidates:
-            raise RuntimeError("Сервис не вернул кандидатов изображения")
-
-        parts_out = candidates[0].get("content", {}).get("parts", [])
-        if not isinstance(parts_out, list):
-            parts_out = []
-
+            raise RuntimeError("API не вернул результатов генерации")
+        
+        # Берем первый кандидат
+        candidate = candidates[0]
+        
+        # Проверка safety ratings
+        if candidate.get("safetyRatings"):
+            safety_issues = [
+                rating for rating in candidate["safetyRatings"]
+                if rating.get("probability") in ["HIGH", "MEDIUM"]
+            ]
+            if safety_issues:
+                logger.warning(f"Обнаружены safety issues: {safety_issues}")
+        
+        # Извлечение изображения
+        parts_out = candidate.get("content", {}).get("parts", [])
         for part in parts_out:
             if not isinstance(part, dict):
                 continue
-
+            
             inline_data = part.get("inlineData") or part.get("inline_data")
-            if not inline_data or not isinstance(inline_data, dict):
-                continue
-
-            mime = inline_data.get("mimeType") or inline_data.get("mime_type")
-            b64_data = inline_data.get("data")
-            if not b64_data:
-                continue
-
-            mime_type_out = mime or mime_type_out
-            image_bytes = base64.b64decode(b64_data)
-            break
-
+            if inline_data and isinstance(inline_data, dict):
+                mime = inline_data.get("mimeType") or inline_data.get("mime_type")
+                b64_data = inline_data.get("data")
+                
+                if b64_data:
+                    mime_type_out = mime or mime_type_out
+                    image_bytes = base64.b64decode(b64_data)
+                    break
+        
         if not image_bytes:
-            raise RuntimeError("Не удалось получить изображение из ответа сервиса")
+            raise RuntimeError("Не удалось извлечь изображение из ответа API")
+        
+        logger.info(f"Изображение получено: {len(image_bytes)} bytes, тип: {mime_type_out}")
+        
     except Exception as e:
-        logger.exception("Ошибка при разборе ответа APIYI: %s", e)
-        raise RuntimeError("Ошибка при обработке ответа сервиса генерации") from e
-
-    # 6) Сохраняем во временный файл
+        logger.exception(f"Ошибка обработки ответа API: {e}")
+        raise RuntimeError("Ошибка обработки сгенерированного изображения")
+    
+    # Сохранение во временный файл
     try:
+        # Определение расширения
+        ext_map = {
+            "image/png": ".png",
+            "image/webp": ".webp",
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg"
+        }
+        ext = ext_map.get(mime_type_out.lower(), ".jpg")
+        
+        # Создание уникального имени файла
+        timestamp = int(time.time())
+        joined_ids = "_".join(file_ids[:2])  # Берем только первые 2 ID для читаемости
+        slug = _safe_slug(joined_ids, 50)
+        suffix = f"{len(file_ids)}p_{timestamp}"
+        
         tmp_dir = tempfile.gettempdir()
-        ext = ".jpg"
-        if "png" in mime_type_out:
-            ext = ".png"
-        elif "webp" in mime_type_out:
-            ext = ".webp"
-
-        joined_ids = "_".join(file_ids)
-        slug = _safe_slug(joined_ids)
-        suffix = f"{len(file_ids)}p"
         file_path = os.path.join(tmp_dir, f"photoshoot_{slug}_{suffix}{ext}")
-
+        
+        # Сохранение файла
         with open(file_path, "wb") as f:
             f.write(image_bytes)
-
+        
+        logger.info(f"Изображение сохранено: {file_path} ({len(image_bytes)/1024/1024:.1f} MB)")
+        
+        # Проверка существования файла
+        if not os.path.exists(file_path):
+            raise RuntimeError("Не удалось сохранить файл")
+        
         return FSInputFile(file_path)
+        
     except Exception as e:
-        logger.exception("Ошибка при сохранении сгенерированного фото: %s", e)
-        raise RuntimeError("Не удалось сохранить сгенерированное фото") from e
+        logger.exception(f"Ошибка сохранения изображения: {e}")
+        
+        # Очистка временных файлов при ошибке
+        if 'file_path' in locals() and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except:
+                pass
+        
+        raise RuntimeError("Ошибка сохранения сгенерированного изображения")
+
+
+# Опционально: функция для очистки старых временных файлов
+async def cleanup_temp_files(max_age_hours: int = 24):
+    """Очистка старых временных файлов"""
+    try:
+        tmp_dir = tempfile.gettempdir()
+        now = time.time()
+        removed = 0
+        
+        for filename in os.listdir(tmp_dir):
+            if filename.startswith("photoshoot_"):
+                filepath = os.path.join(tmp_dir, filename)
+                try:
+                    file_age = now - os.path.getmtime(filepath)
+                    if file_age > max_age_hours * 3600:
+                        os.remove(filepath)
+                        removed += 1
+                except Exception as e:
+                    logger.debug(f"Не удалось удалить {filename}: {e}")
+        
+        if removed > 0:
+            logger.info(f"Очищено {removed} временных файлов")
+            
+    except Exception as e:
+        logger.error(f"Ошибка очистки временных файлов: {e}")
