@@ -477,6 +477,17 @@ async def delete_user_avatar_endpoint(
 # Генерация фотосессии из веб-аппы
 # -------------------------------------------------------------------
 
+class PhotoshootError(Exception):
+    pass
+
+class PhotoshootTemporaryError(PhotoshootError):
+    """Можно попробовать позже"""
+
+class PhotoshootRateLimitError(PhotoshootTemporaryError):
+    pass
+
+class PhotoshootUpstreamError(PhotoshootTemporaryError):
+    pass
 
 @app.post("/api/photoshoots/generate")
 async def generate_photoshoot_from_upload(
@@ -510,6 +521,9 @@ async def generate_photoshoot_from_upload(
             )
         cost_rub = PHOTOSHOOT_PRICE
         used_credits = False
+        
+        
+    
 
     try:
         generated_bytes, mime_type = await generate_photoshoot_image_from_bytes(
@@ -537,6 +551,21 @@ async def generate_photoshoot_from_upload(
             error_message=str(e),
         )
         raise HTTPException(status_code=500, detail="Ошибка при генерации фотосессии. Попробуй позже.")
+    except PhotoshootRateLimitError:
+        raise HTTPException(
+            status_code=429,
+            detail="Сервис генерации сейчас перегружен. Попробуй позже."
+        )
+    except PhotoshootTemporaryError:
+        raise HTTPException(
+            status_code=503,
+            detail="Временная ошибка генерации. Попробуй позже."
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Внутренняя ошибка сервиса."
+        )
 
     return Response(content=generated_bytes, media_type=mime_type or "image/jpeg")
 
