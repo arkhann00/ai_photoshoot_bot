@@ -98,6 +98,7 @@ app.add_middleware(
         "https://aiphotostudio.ru",
         "https://www.aiphotostudio.ru",
         "https://admin.aiphotostudio.ru",
+        "https://ai.photostudio.xn--80a6ad.space",
         "http://localhost:5111"
     ],
     allow_credentials=True,
